@@ -2,27 +2,24 @@ import math
 import torch
 import genesis as gs
 import numpy as np
-import gymnasium as gym
+
 
 class PursuitEnv:
     def __init__(self, num_envs, env_cfg, obs_cfg, reward_cfg, command_cfg=None, show_viewer=False, device="cuda"):
         self.device = torch.device(device)
+
+        self.num_envs = num_envs
+        self.num_obs = obs_cfg["num_obs"]
+        self.num_privileged_obs = None
+        self.num_actions = env_cfg["num_actions"]
+
+        self.dt = 0.01  # run in 100hz
+        self.max_episode_length = math.ceil(env_cfg["episode_length_s"] / self.dt)
+
         self.env_cfg = env_cfg
         self.obs_cfg = obs_cfg
         self.reward_cfg = reward_cfg
-        
-        # simulation settings
-        self.dt = 0.01  # run in 100hz
-        self.max_episode_length = math.ceil(env_cfg["episode_length_s"] / self.dt)
-        
-        # environment settings
-        self.num_envs = num_envs
-        self.num_agents = 1
-        self.num_observations = obs_cfg["num_observations"]
-        self.num_actions = env_cfg["num_actions"]
-        
-        # NOTE: might need to add observation space, action space, state space
-        
+
         # create scene
         self.scene = gs.Scene(
             sim_options=gs.options.SimOptions(dt=self.dt, substeps=2),
@@ -95,11 +92,10 @@ class PursuitEnv:
             self.episode_sums[name] = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
             
         # initialize buffers
-        self.observation = torch.zeros((self.num_envs, self.num_observations), device=self.device, dtype=gs.tc_float)
-        self.rewards = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
-        self.terminated = torch.ones((self.num_envs,), device=self.device, dtype=gs.tc_int)
-        self.truncated = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
-        self.episode_length = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
+        self.obs_buf = torch.zeros((self.num_envs, self.num_obs), device=self.device, dtype=gs.tc_float)
+        self.rew_buf = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
+        self.reset_buf = torch.ones((self.num_envs,), device=self.device, dtype=gs.tc_int)
+        self.episode_length_buf = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
         
         self.agent_actions = torch.zeros((self.num_envs, self.num_actions), device=self.device, dtype=gs.tc_float)
         self.last_agent_actions = torch.zeros_like(self.agent_actions)
@@ -125,11 +121,11 @@ class PursuitEnv:
             actions: agent/pursuer action
             
         Return:
-            observation: Tensor containing the observations of the environment (for the next time step)
-            rewards: Tensor containing the rewards (for the current step), shape [num_envs, 1]
-            terminated: Tensor indicating which environments have terminated, shape [num_envs, 1]
-            truncated: Tensor indicating which environments have been truncated, shape [num_envs, 1]
-            extras: Dictionary containing extra information for logging
+            - obs_buf: Tensor containing the observations of the environment (for the next time step).
+            - None: Placeholder for privileged observations (not used here).
+            - rew_buf: Tensor containing the rewards (for the current step).
+            - reset_buf: Tensor indicating which environments need to be reset.
+            - extras: Dictionary containing extra information for logging.
         """       
         
         # apply target action
@@ -148,7 +144,7 @@ class PursuitEnv:
         self.scene.step()
         
         # update buffers
-        self.episode_length += 1
+        self.episode_length_buf += 1
         self.last_agent_pos[:] = self.agent_pos[:]
         self.last_target_pos[:] = self.target_pos[:]
         self.last_rel_pos = self.rel_pos
@@ -158,32 +154,40 @@ class PursuitEnv:
 
         # compute observations
         self.compute_observations()
-
+        
         # compute reward
-        self.rewards[:] = 0.0
+        self.rew_buf[:] = 0.0
         for name, reward_func in self.reward_functions.items():
             rew = reward_func() * self.reward_scales[name]
-            self.rewards += rew
+            self.rew_buf += rew
             self.episode_sums[name] += rew
             
-        #check truncate and reset
-        self.truncated = (
+        #check termination and reset
+        self.finish_condition = (
             (torch.norm(self.rel_pos[:, :2], dim=1) < self.env_cfg["at_target_threshold"])  # distance in xy within threshold = capture
-        )   # [num_envs,]
+        )
+        self.reset_buf = (self.episode_length_buf > self.max_episode_length) | self.finish_condition
         
-        self.terminated = (self.episode_length > self.max_episode_length)
+        # time out
+        time_out_idx = (self.episode_length_buf > self.max_episode_length).nonzero(as_tuple=False).flatten()
+        self.extras["time_outs"] = torch.zeros_like(self.reset_buf, device=self.device, dtype=gs.tc_float)
+        self.extras["time_outs"][time_out_idx] = 1.0
 
         # reset
-        reset_flag = self.truncated | self.terminated
-        self.reset_idx(reset_flag.nonzero(as_tuple=False).flatten())
+        self.reset_idx(self.reset_buf.nonzero(as_tuple=False).flatten())
         
         self.last_agent_actions[:] = self.agent_actions[:]
 
-        # unsqueeze rewards, terminated, truncated to match skrl format
-        return self.observation, self.rewards.unsqueeze(-1), self.terminated.unsqueeze(-1), self.truncated.unsqueeze(-1), self.extras
+        return self.obs_buf, None, self.rew_buf, self.reset_buf, self.extras
     
     def compute_observations(self):
-        self.observation = self.rel_pos
+        self.obs_buf = self.rel_pos
+    
+    def get_observations(self):
+        return self.obs_buf
+
+    def get_privileged_observations(self):
+        return None
     
     def reset_idx(self, envs_idx):
         if len(envs_idx) == 0:
@@ -209,22 +213,18 @@ class PursuitEnv:
         
         self.rel_pos[envs_idx] = self.target_pos[envs_idx] - self.agent_pos[envs_idx]
         self.last_rel_pos[envs_idx] = self.rel_pos[envs_idx]
-        
-        # compute new observations for the truncated and terminated environments, so that value is computed correctly in the next step
-        # TODO: is this necessary?
-        self.compute_observations()
-        
+    
         # reset buffers
         self.last_agent_actions[envs_idx] = 0.0
-        self.episode_length[envs_idx] = 0
-        self.terminated[envs_idx] = 0
-        self.truncated[envs_idx] = 0
+        self.episode_length_buf[envs_idx] = 0
+        self.reset_buf[envs_idx] = True
         for key in self.episode_sums.keys():
             self.episode_sums[key][envs_idx] = 0.0
         
     def reset(self):
+        self.reset_buf[:] = True
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
-        return self.observation, None
+        return self.obs_buf, None
         
     def get_repulsive_action(self):
         """Compute repulsive action for the evader
@@ -333,13 +333,3 @@ class PursuitEnv:
                 color=(0.0, 0.0, 0.0, 0.5), # Black color with 0.5 alpha
             ),
         )
-        
-    # ------------ skrl required methods ----------------
-    def state(self):
-        return self.agent_pos, self.target_pos
-    
-    def render(self):
-        pass
-    
-    def close(self):
-        pass
