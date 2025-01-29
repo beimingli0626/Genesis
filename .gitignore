@@ -6,6 +6,10 @@ imgui.ini
 sftp-config.json
 *.mp4
 
+# wandb
+wandb_config.py
+wandb/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
