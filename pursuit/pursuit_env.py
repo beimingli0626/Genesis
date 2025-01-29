@@ -5,29 +5,26 @@ import numpy as np
 import gymnasium as gym
 
 class PursuitEnv:
-    def __init__(self, num_envs, env_cfg, obs_cfg, reward_cfg, command_cfg=None, show_viewer=False, device="cuda"):
+    def __init__(self, cfg, show_viewer=False, device="cuda"):
         self.device = torch.device(device)
-        self.env_cfg = env_cfg
-        self.obs_cfg = obs_cfg
-        self.reward_cfg = reward_cfg
+        self.cfg = cfg
         
         # simulation settings
-        self.dt = 0.01  # run in 100hz
-        self.max_episode_length = math.ceil(env_cfg["episode_length_s"] / self.dt)
+        self.dt = self.cfg.get("dt", 0.01)  # run in 100hz
+        self.episode_length_s = self.cfg.get("episode_length_s", 5)
+        self.max_episode_length = math.ceil(self.episode_length_s / self.dt)
         
         # environment settings
-        self.num_envs = num_envs
-        self.num_agents = 1
-        self.num_observations = obs_cfg["num_observations"]
-        self.num_actions = env_cfg["num_actions"]
-        
-        # NOTE: might need to add observation space, action space, state space
+        self.num_envs = self.cfg.get("num_envs", 2)
+        self.num_agents = self.cfg.get("agent", {}).get("num_agents", 1)
+        self.num_observations = self.cfg.get("agent", {}).get("num_observations", 3)
+        self.num_actions = self.cfg.get("agent", {}).get("num_actions", 3)
         
         # create scene
         self.scene = gs.Scene(
             sim_options=gs.options.SimOptions(dt=self.dt, substeps=2),
             viewer_options=gs.options.ViewerOptions(
-                max_FPS=env_cfg["max_visualize_FPS"],
+                max_FPS=self.cfg.get("max_visualize_FPS", 100),
                 camera_pos=(3.0, 0.0, 3.0),
                 camera_lookat=(0.0, 0.0, 1.0),
                 camera_fov=40,
@@ -44,16 +41,6 @@ class PursuitEnv:
 
         # add plane
         self.scene.add_entity(gs.morphs.Plane())
-
-        # add camera
-        if self.env_cfg["visualize_camera"]:
-            self.cam = self.scene.add_camera(
-                res=(640, 480),
-                pos=(3.5, 0.0, 2.5),
-                lookat=(0, 0, 0.5),
-                fov=30,
-                GUI=True,
-            )
 
         # add drone
         self.agent = self.scene.add_entity(
@@ -80,43 +67,63 @@ class PursuitEnv:
         )
 
         # visualize arena
-        self.arena_size = env_cfg["arena_size"]
+        self.arena_size = self.cfg.get("arena", {}).get("arena_size", 2)
         self.visualize_arena()
         
+        # add camera
+        if self.cfg.get("visualize_camera", False):
+            self.cam = self.scene.add_camera(
+                res=(640, 480),
+                pos=(3.5, 0.0, 2.5),
+                lookat=(0, 0, 0.5),
+                fov=30,
+                GUI=True,
+            )
+        
         # build scene
-        self.scene.build(n_envs=num_envs)
+        self.scene.build(n_envs=self.num_envs)
         
         # prepare reward functions and multiply reward scales by dt
-        self.reward_scales = reward_cfg["reward_scales"]
+        self.reward_scales = self.cfg.get("reward", {}).get("reward_scales", {})
         self.reward_functions, self.episode_sums = dict(), dict()
         for name in self.reward_scales.keys():
             self.reward_scales[name] *= self.dt
             self.reward_functions[name] = getattr(self, "_reward_" + name)
             self.episode_sums[name] = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
             
+        # pursuit evasion settings
+        self.debug_viz = self.cfg.get("debug_viz", False)
+        self.at_target_threshold = self.cfg.get("agent", {}).get("at_target_threshold", 0.2)
+        self.clip_agent_actions = self.cfg.get("agent", {}).get("clip_agent_actions", 1.5)
+        self.clip_target_actions = self.cfg.get("target", {}).get("clip_target_actions", 3.0)
+        
         # initialize buffers
         self.observation = torch.zeros((self.num_envs, self.num_observations), device=self.device, dtype=gs.tc_float)
         self.rewards = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
         self.terminated = torch.ones((self.num_envs,), device=self.device, dtype=gs.tc_int)
         self.truncated = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
+        
         self.episode_length = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
         
         self.agent_actions = torch.zeros((self.num_envs, self.num_actions), device=self.device, dtype=gs.tc_float)
-        self.last_agent_actions = torch.zeros_like(self.agent_actions)
+        self.last_agent_actions = torch.zeros_like(self.agent_actions)  # used for smooth reward
         
+        # initialize buffers need to be reset in reset()
         self.agent_pos = torch.zeros((self.num_envs, 3), device=self.device, dtype=gs.tc_float)
-        self.agent_quat = torch.zeros((self.num_envs, 4), device=self.device, dtype=gs.tc_float)
         self.target_pos = torch.zeros((self.num_envs, 3), device=self.device, dtype=gs.tc_float)
         self.rel_pos = torch.zeros((self.num_envs, 3), device=self.device, dtype=gs.tc_float)
         self.last_agent_pos = torch.zeros_like(self.agent_pos)
         self.last_target_pos = torch.zeros_like(self.target_pos)
         self.last_rel_pos = torch.zeros_like(self.rel_pos)
-        
         self.extras = dict()  # extra information for logging
-        self.finish_condition = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
-        
-        # pursuit evasion settings
-        self.debug_viz = env_cfg.get("debug_viz", False)
+    
+    @property
+    def observation_space(self):
+        return self.num_observations
+    
+    @property
+    def action_space(self):
+        return self.num_actions
     
     def step(self, actions):
         """Step environment
@@ -132,26 +139,26 @@ class PursuitEnv:
             extras: Dictionary containing extra information for logging
         """       
         
-        # apply target action
-        target_actions = self.get_repulsive_action()
-        self.target_actions = torch.clip(target_actions, -self.env_cfg["clip_target_actions"], self.env_cfg["clip_target_actions"])
-        new_target_pos = self.target_pos + self.dt * self.target_actions
-        self.target.set_pos(new_target_pos, zero_velocity=True)
-        
-        # apply agent action, replace this with actual prediction of policy network
-        self.agent_actions = torch.clip(actions, -self.env_cfg["clip_agent_actions"], self.env_cfg["clip_agent_actions"])
+        # apply agent action
+        self.agent_actions = torch.clip(actions, -self.clip_agent_actions, self.clip_agent_actions)
         self.agent_actions[:, 2] = 0.0 # keep Z constant
         new_agent_pos = self.agent_pos + self.dt * self.agent_actions
         self.agent.set_pos(new_agent_pos, zero_velocity=True)
+        
+        # calculate and apply target action
+        target_actions = self.get_repulsive_action()
+        self.target_actions = torch.clip(target_actions, -self.clip_target_actions, self.clip_target_actions)
+        new_target_pos = self.target_pos + self.dt * self.target_actions
+        self.target.set_pos(new_target_pos, zero_velocity=True)
         
         # step genesis scene
         self.scene.step()
         
         # update buffers
-        self.episode_length += 1
+        self.episode_length.add_(1)
         self.last_agent_pos[:] = self.agent_pos[:]
         self.last_target_pos[:] = self.target_pos[:]
-        self.last_rel_pos = self.rel_pos
+        self.last_rel_pos[:] = self.rel_pos[:]
         self.agent_pos[:] = self.agent.get_pos()
         self.target_pos[:] = self.target.get_pos()
         self.rel_pos = self.target_pos - self.agent_pos
@@ -167,40 +174,50 @@ class PursuitEnv:
             self.episode_sums[name] += rew
             
         #check truncate and reset
-        self.truncated = (
-            (torch.norm(self.rel_pos[:, :2], dim=1) < self.env_cfg["at_target_threshold"])  # distance in xy within threshold = capture
-        )   # [num_envs,]
-        
-        self.terminated = (self.episode_length > self.max_episode_length)
+        self.terminated = (
+            (torch.norm(self.rel_pos[:, :2], dim=1) < self.at_target_threshold)  # distance in xy within threshold = capture
+        )
+        self.truncated = (self.episode_length > self.max_episode_length)
 
+        # place before reset_idx because it overwrites last_agent_actions for finished environments for correct reward computation at the next step
+        self.last_agent_actions[:] = self.agent_actions[:]
+                
         # reset
         reset_flag = self.truncated | self.terminated
         self.reset_idx(reset_flag.nonzero(as_tuple=False).flatten())
-        
-        self.last_agent_actions[:] = self.agent_actions[:]
 
-        # unsqueeze rewards, terminated, truncated to match skrl format
+        # unsqueeze rewards, terminated, truncated to match skrl format, [num_envs, 1]
         return self.observation, self.rewards.unsqueeze(-1), self.terminated.unsqueeze(-1), self.truncated.unsqueeze(-1), self.extras
     
     def compute_observations(self):
-        self.observation = self.rel_pos
+        """Compute observations
+        
+        Note that observation should be deepcopy, otherwise it will point to the same memory address as rel_pos
+        """
+        self.observation[:] = self.rel_pos[:]
     
     def reset_idx(self, envs_idx):
+        """Reset environments
+        
+        Resample initial positions for agent and target
+        
+        Args:
+            envs_idx: indices of environments to reset
+        """
         if len(envs_idx) == 0:
             return
 
         # sample initial positions for agent and target
-        range = 2.0
+        range = 1.5
         self.agent_init_pos = torch.ones((len(envs_idx), 3), device=self.device)
         self.agent_init_pos[:, :2] = torch.empty((len(envs_idx), 2), device=self.device).uniform_(-range, range)
-        self.target_init_pos = 0.5 * torch.ones((len(envs_idx), 3), device=self.device)
+        self.target_init_pos = torch.ones((len(envs_idx), 3), device=self.device)
         self.target_init_pos[:, :2] = torch.empty((len(envs_idx), 2), device=self.device).uniform_(-range, range)
         
         # reset agent
         self.agent_pos[envs_idx] = self.agent_init_pos
         self.agent.set_pos(self.agent_pos[envs_idx], zero_velocity=True, envs_idx=envs_idx)
         self.agent.zero_all_dofs_velocity(envs_idx)
-        # self.agent_quat[envs_idx] = self.agent_init_quat.reshape(1, -1) # [num_env, 4]
 
         # reset target
         self.target_pos[envs_idx] = self.target_init_pos
@@ -208,17 +225,9 @@ class PursuitEnv:
         self.target.zero_all_dofs_velocity(envs_idx)
         
         self.rel_pos[envs_idx] = self.target_pos[envs_idx] - self.agent_pos[envs_idx]
-        self.last_rel_pos[envs_idx] = self.rel_pos[envs_idx]
         
-        # compute new observations for the truncated and terminated environments, so that value is computed correctly in the next step
-        # TODO: is this necessary?
-        self.compute_observations()
-        
-        # reset buffers
-        self.last_agent_actions[envs_idx] = 0.0
+        self.last_agent_actions[envs_idx] = 0  # initial last action should be zero for a new episode
         self.episode_length[envs_idx] = 0
-        self.terminated[envs_idx] = 0
-        self.truncated[envs_idx] = 0
         for key in self.episode_sums.keys():
             self.episode_sums[key][envs_idx] = 0.0
         
@@ -261,6 +270,8 @@ class PursuitEnv:
         """Reward for moving towards the target
         
         Reward is the difference in the square of distance to target between current and previous step
+        NOTE: this is not a good reward function, it is just for testing; it will drive the agent to 
+        stay within certain distance from the target (why?)
         """
         target_rew = torch.sum(torch.square(self.last_rel_pos), dim=1) - torch.sum(torch.square(self.rel_pos), dim=1)
         return target_rew
@@ -273,13 +284,13 @@ class PursuitEnv:
         smooth_rew = torch.sum(torch.square(self.agent_actions - self.last_agent_actions), dim=1)
         return smooth_rew
     
-    # def _reward_capture(self):
-    #     """Reward for capturing the target
+    def _reward_capture(self):
+        """Reward for capturing the target
         
-    #     Returns:
-    #         reward: 1 if target is captured, 0 otherwise
-    #     """
-    #     return (torch.norm(self.rel_pos[:, :2], dim=1) < self.env_cfg["at_target_threshold"])  # distance in xy within threshold = capture
+        Returns:
+            reward: 1 if target is captured, 0 otherwise
+        """
+        return (torch.norm(self.rel_pos[:, :2], dim=1) < self.at_target_threshold)  # distance in xy within threshold = capture
 
 
     # ------------ debug visualization ----------------
@@ -334,9 +345,9 @@ class PursuitEnv:
             ),
         )
         
-    # ------------ skrl required methods ----------------
+    # ------------ skrl required interface ----------------
     def state(self):
-        return self.agent_pos, self.target_pos
+        pass
     
     def render(self):
         pass
