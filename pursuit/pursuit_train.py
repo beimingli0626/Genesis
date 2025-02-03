@@ -107,7 +107,7 @@ def get_train_cfg(log_dir, experiment_name):
             "write_interval": 40,  # TensorBoard writing interval (timesteps), "auto" save 100 records
             "checkpoint_interval": "auto",  # interval for checkpoints (timesteps), "auto" save 10 checkpoints
             "store_separately": False,  # whether to store checkpoints separately
-            "wandb": False,  # whether to use Weights & Biases
+            "wandb": True,  # whether to use Weights & Biases
             "wandb_kwargs": {  # wandb kwargs
                 "project": "pursuit-evasion",
                 "entity": WANDB_ENTITY,
@@ -125,11 +125,11 @@ def get_env_cfg():
         "dt": 0.01,
         # agent
         "agent": {
-            "num_agents": 1,
+            "num_agents": 2,
             "num_observations": 3,  # number of observations per agent
             "num_actions": 3,  # number of actions per agent
             "at_target_threshold": 0.5,
-            "clip_agent_actions": 3.0,
+            "clip_agent_actions": 2.5,
             "observation_mode": ["rel_pos"],
             "collision_threshold": 0.2,
         },
@@ -137,8 +137,8 @@ def get_env_cfg():
             "clip_target_actions": 2.5,
         },
         "arena": {
-            "use_arena": False,
-            "arena_size": 2.0,
+            "use_arena": True,
+            "arena_size": 3.0,
         },
         "reward": {
             "reward_scales": {
