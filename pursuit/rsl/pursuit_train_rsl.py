@@ -14,10 +14,10 @@ def get_train_cfg(exp_name, max_iterations):
         "algorithm": {
             "clip_param": 0.2,
             "desired_kl": 0.01,
-            "entropy_coef": 0.004,
+            "entropy_coef": 0.0,
             "gamma": 0.99,
             "lam": 0.95,
-            "learning_rate": 0.0003,
+            "learning_rate": 1e-3,
             "max_grad_norm": 1.0,
             "num_learning_epochs": 5,
             "num_mini_batches": 4,
@@ -27,9 +27,9 @@ def get_train_cfg(exp_name, max_iterations):
         },
         "init_member_classes": {},
         "policy": {
-            "activation": "tanh",
-            "actor_hidden_dims": [128, 128],
-            "critic_hidden_dims": [128, 128],
+            "activation": "elu",
+            "actor_hidden_dims": [512, 256, 128],
+            "critic_hidden_dims": [512, 256, 128],
             "init_noise_std": 1.0,
         },
         "runner": {
@@ -60,10 +60,10 @@ def get_cfgs():
         "num_actions": 3,
         "episode_length_s": 5.0,
         # agent pose
-        "at_target_threshold": 0.2,
-        "clip_agent_actions": 1.5,
+        "at_target_threshold": 0.5,
+        "clip_agent_actions": 3.0,
         # target pose
-        "clip_target_actions": 3.0,
+        "clip_target_actions": 2.5,
         # arena
         "arena_size": 3.0,
         # visualization
@@ -77,9 +77,10 @@ def get_cfgs():
     }
     reward_cfg = {
         "reward_scales": {
-            "target": 10.0,
-            "smooth": -1e-4,
-            # "capture": 1.0,
+            # "target": 10.0,
+            # "smooth": -1e-4,
+            "distance": -1.0,
+            "capture": 100.0,
         },
     }
     command_cfg = {}
@@ -92,7 +93,7 @@ def main():
     parser.add_argument("-e", "--exp_name", type=str, default="pursuit")
     parser.add_argument("-v", "--vis", action="store_true", default=False)
     parser.add_argument("-B", "--num_envs", type=int, default=2)
-    parser.add_argument("--max_iterations", type=int, default=300)
+    parser.add_argument("--max_iterations", type=int, default=1000)
     args = parser.parse_args()
 
     gs.init(logging_level="error")

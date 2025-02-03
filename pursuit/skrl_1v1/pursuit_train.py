@@ -99,7 +99,7 @@ def get_train_cfg(log_dir, experiment_name):
             "write_interval": 40,  # TensorBoard writing interval (timesteps), "auto" save 100 records
             "checkpoint_interval": "auto",  # interval for checkpoints (timesteps), "auto" save 10 checkpoints
             "store_separately": False,  # whether to store checkpoints separately
-            "wandb": True,  # whether to use Weights & Biases
+            "wandb": False,  # whether to use Weights & Biases
             "wandb_kwargs": {  # wandb kwargs
                 "project": "pursuit-evasion",
                 "entity": WANDB_ENTITY,

@@ -26,7 +26,9 @@ class PursuitEnv:
         # environment settings
         self.num_envs = self.cfg.get("num_envs", 2)
         self.num_agents = self.cfg.get("agent", {}).get("num_agents", 1)
-        self.num_observations = self.cfg.get("agent", {}).get("num_observations", 3) * self.num_agents
+        self.num_observations = self.cfg.get("agent", {}).get("num_observations", 3)
+        self.observation_mode = self.cfg.get("agent", {}).get("observation_mode", ["rel_pos"])
+        self.update_num_observations()
         self.num_actions = self.cfg.get("agent", {}).get("num_actions", 3) * self.num_agents
         self.num_states = 3 * self.num_agents  # TODO: change to actual state space
 
@@ -120,7 +122,7 @@ class PursuitEnv:
         # initialize buffers, note that all below buffers should be rewrite as dict for multi-agent env, with key as agent id
         self.observation = torch.zeros((self.num_envs, self.num_observations), device=self.device, dtype=gs.tc_float)
         self.rewards = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
-        self.terminated = torch.ones((self.num_envs,), device=self.device, dtype=gs.tc_int)
+        self.terminated = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
         self.truncated = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
         self.agent_actions = torch.zeros((self.num_envs, self.num_actions), device=self.device, dtype=gs.tc_float)
 
@@ -129,9 +131,8 @@ class PursuitEnv:
         self.agent_pos = torch.zeros((self.num_envs, self.num_agents, 3), device=self.device, dtype=gs.tc_float)
         self.target_pos = torch.zeros((self.num_envs, 3), device=self.device, dtype=gs.tc_float)
         self.rel_pos = torch.zeros((self.num_envs, self.num_agents, 3), device=self.device, dtype=gs.tc_float)
-        self.min_dist = torch.zeros(
-            (self.num_envs,), device=self.device, dtype=gs.tc_float
-        )  # min distance of any agent to target
+        self.min_dist = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
+        self.avg_dist = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
         self.last_agent_pos = torch.zeros_like(self.agent_pos)
         self.last_target_pos = torch.zeros_like(self.target_pos)
         self.last_rel_pos = torch.zeros_like(self.rel_pos)
@@ -140,6 +141,12 @@ class PursuitEnv:
         self.episode_length = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
         self.last_agent_actions = torch.zeros_like(self.agent_actions)  # used for smooth reward
         self.extras = dict()  # extra information for logging
+
+    def update_num_observations(self):
+        if "rel_pos" in self.observation_mode:
+            self.num_observations = self.num_agents * 3
+        if "rel_pos_agents" in self.observation_mode:
+            self.num_observations += self.num_agents * self.num_agents * 3
 
     def step(self, actions):
         """Step environment
@@ -187,9 +194,14 @@ class PursuitEnv:
         self.target_pos[:] = self.target.get_pos()  # [num_envs, 3]
         self.rel_pos = self.target_pos.unsqueeze(1) - self.agent_pos  # [num_envs, num_agents, 3]
 
+        # calculate relative positions between all agents
+        # [num_envs, num_agents, num_agents, 3] where rel_pos_agents[i,j,k] is pos of agent k relative to agent j in env i
+        self.rel_pos_agents = self.agent_pos.unsqueeze(2) - self.agent_pos.unsqueeze(1)
+
         # compute min distance of any agent to target
-        capture_distances = torch.norm(self.rel_pos[..., :2], dim=-1)  # dist in xy plane, [num_envs, num_agents]
-        self.min_dist = torch.amin(capture_distances, dim=1)
+        rel_dist = torch.norm(self.rel_pos[..., :2], p=2, dim=-1)  # dist in xy plane, [num_envs, num_agents]
+        self.min_dist = torch.amin(rel_dist, dim=1)  # [num_envs]
+        self.avg_dist = rel_dist.mean(dim=1)  # [num_envs]
 
         # compute observations
         self.compute_observations()
@@ -226,7 +238,10 @@ class PursuitEnv:
 
         Note that observation should be deepcopy, otherwise it will point to the same memory address as rel_pos
         """
-        self.observation[:] = self.rel_pos[:].view(self.num_envs, -1)
+        if "rel_pos" in self.observation_mode:
+            self.observation[:, : 3 * self.num_agents] = self.rel_pos.view(self.num_envs, -1)
+        if "rel_pos_agents" in self.observation_mode:
+            self.observation[:, 3 * self.num_agents :] = self.rel_pos_agents.view(self.num_envs, -1)
 
     def reset_idx(self, envs_idx):
         """Reset environments
@@ -240,16 +255,14 @@ class PursuitEnv:
             return
 
         # sample initial positions for agents and target
-        pos_range = 1.5
-        self.agent_init_pos = torch.ones((len(envs_idx), self.num_agents, 3), device=self.device)
-        self.agent_init_pos[..., :2] = torch.empty((len(envs_idx), self.num_agents, 2), device=self.device).uniform_(
+        pos_range = 1.0
+        self.agent_init_pos = torch.empty((len(envs_idx), self.num_agents, 3), device=self.device).uniform_(
             -pos_range, pos_range
         )
+        self.agent_init_pos[..., 2] = 1.0  # Set z-coordinate to 1.0
 
-        self.target_init_pos = torch.ones((len(envs_idx), 3), device=self.device)
-        self.target_init_pos[:, :2] = torch.empty((len(envs_idx), 2), device=self.device).uniform_(
-            -pos_range, pos_range
-        )
+        self.target_init_pos = torch.empty((len(envs_idx), 3), device=self.device).uniform_(-pos_range, pos_range)
+        self.target_init_pos[..., 2] = 1.0  # Set z-coordinate to 1.0
 
         # reset agents
         self.agent_pos[envs_idx] = self.agent_init_pos
@@ -263,6 +276,9 @@ class PursuitEnv:
         self.target.zero_all_dofs_velocity(envs_idx)
 
         self.rel_pos[envs_idx] = self.target_pos[envs_idx].unsqueeze(1) - self.agent_pos[envs_idx]
+        rel_dist = torch.norm(self.rel_pos[envs_idx, :, :2], p=2, dim=-1)  # [num_envs_idx, num_agents]
+        self.min_dist[envs_idx] = torch.amin(rel_dist, dim=-1)  # [num_envs_idx]
+        self.avg_dist[envs_idx] = rel_dist.mean(dim=-1)  # [num_envs_idx]
 
         self.last_agent_actions[envs_idx] = 0  # initial last action should be zero for a new episode
         self.episode_length[envs_idx] = 0
@@ -285,18 +301,19 @@ class PursuitEnv:
         # Calculate pursuer forces for all agents at once
         force_pursuer = torch.zeros((self.num_envs, 3), device=self.device, dtype=gs.tc_float)
         rel_pos_xy = self.rel_pos[..., :2]  # [num_envs, num_agents, 2]
-        norm = torch.norm(rel_pos_xy, dim=-1, keepdim=True) ** 2 + 1e-5  # [num_envs, num_agents, 1]
+        norm = torch.norm(rel_pos_xy, p=2, dim=-1, keepdim=True) ** 2 + 1e-5  # [num_envs, num_agents, 1]
         force_pursuer[..., :2] = (rel_pos_xy / norm).sum(dim=1)  # sum over agents, result is [num_envs, 2]
 
         # arena force, receive very large force when out of arena
         force_arena = torch.zeros_like(force_pursuer)
-        target_origin_dist = torch.norm(self.target_pos[..., :2], dim=-1, keepdim=True)
+        target_origin_dist = torch.norm(self.target_pos[..., :2], p=2, dim=-1, keepdim=True)
         force_arena_vec = -self.target_pos[..., :2] / (target_origin_dist + 1e-5)  # unit vector pointing to center
-        out_of_arena = torch.norm(self.target_pos[..., :2], dim=-1, keepdim=True) > self.arena_size
+        out_of_arena = torch.norm(self.target_pos[..., :2], p=2, dim=-1, keepdim=True) > self.arena_size
         force_arena[..., :2] = out_of_arena.float() * force_arena_vec * (1 / 1e-5) + (
             ~out_of_arena
         ).float() * force_arena_vec * (1 / ((self.arena_size - target_origin_dist) + 1e-5))
 
+        # force_arena = torch.zeros_like(force_pursuer)
         force = force_pursuer + force_arena
 
         # visualize forces for debugging
@@ -306,6 +323,14 @@ class PursuitEnv:
         return force
 
     # ------------ reward functions ----------------
+    def _reward_distance(self):
+        """Reward (penalty) for distance to target
+
+        Returns:
+            reward: Negative average distance to target for all agents
+        """
+        return self.avg_dist
+
     def _reward_target(self):
         """Reward for moving towards the target
 
@@ -322,7 +347,7 @@ class PursuitEnv:
         Reward is the square of difference in agent action between current and previous step
         """
         smooth_rew = torch.sum(torch.square(self.agent_actions - self.last_agent_actions), dim=1)
-        return smooth_rew
+        return -smooth_rew
 
     def _reward_capture(self):
         """Reward for capturing the target
@@ -331,6 +356,23 @@ class PursuitEnv:
             reward: 1 if target is captured, 0 otherwise
         """
         return self.min_dist < self.at_target_threshold  # distance in xy within threshold = capture
+
+    def _reward_collision(self):
+        """Reward (penalty) for agents getting too close to each other
+
+        Returns:
+            reward: -1 for each pair of agents that are too close
+        """
+        distances = torch.norm(self.rel_pos_agents[..., :2], p=2, dim=-1)  # [num_envs, num_agents, num_agents]
+
+        collision_threshold = 0.2
+        close_pairs = (distances < collision_threshold).sum(dim=(1, 2))  # [num_envs]
+
+        # Subtract self-distances and divide by 2 (since matrix is symmetric)
+        num_collisions = (close_pairs - self.num_agents) / 2
+
+        # Return negative reward for each collision
+        return -num_collisions
 
     # ------------ debug visualization ----------------
     def visualize_forces(self, force_pursuer, force_arena, total_force, env_idx=0):
