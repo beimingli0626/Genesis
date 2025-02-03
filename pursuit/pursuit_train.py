@@ -84,7 +84,7 @@ def get_train_cfg(log_dir, experiment_name):
         "lambda": 0.95,  # TD(lambda) coefficient (lam) for computing returns and advantages
         "learning_rate": 3e-4,  # learning rate
         "learning_rate_scheduler": KLAdaptiveRL,  # learning rate scheduler class
-        "learning_rate_scheduler_kwargs": {"kl_threshold": 0.01},  # learning rate scheduler's kwargs
+        "learning_rate_scheduler_kwargs": {"kl_threshold": 0.01, "min_lr": 1e-5},  # learning rate scheduler's kwargs
         "state_preprocessor": None,  # state preprocessor class (see skrl.resources.preprocessors)
         "state_preprocessor_kwargs": {},  # state preprocessor's kwargs (e.g. {"size": env.observation_space})
         "value_preprocessor": None,  # value preprocessor class (see skrl.resources.preprocessors)
@@ -97,7 +97,7 @@ def get_train_cfg(log_dir, experiment_name):
         "clip_predicted_values": True,  # clip predicted values during value loss computation
         "entropy_loss_scale": 0.01,  # entropy loss scaling factor
         "value_loss_scale": 1.0,  # value loss scaling factor
-        "kl_threshold": 0,  # KL divergence threshold for early stopping
+        "kl_threshold": 0.0,  # KL divergence threshold for early stopping, prevent overfitting
         "rewards_shaper": None,  # rewards shaping function: Callable(reward, timestep, timesteps) -> reward
         "time_limit_bootstrap": False,  # bootstrap at timeout termination (episode truncation)
         "mixed_precision": True,  # enable automatic mixed precision for higher performance
@@ -131,20 +131,23 @@ def get_env_cfg():
             "at_target_threshold": 0.5,
             "clip_agent_actions": 3.0,
             "observation_mode": ["rel_pos"],
+            "collision_threshold": 0.2,
         },
         "target": {
             "clip_target_actions": 2.5,
         },
         "arena": {
-            "arena_size": 3.0,
+            "use_arena": False,
+            "arena_size": 2.0,
         },
         "reward": {
             "reward_scales": {
                 "distance": -1,
                 # "target": 10.0,
                 # "smooth": 1e-4,  # two training phase, only consider smooth reward in the second phase
-                "capture": 10.0,  # capture 100 is too high, make the agent overfit to move to one single direction
-                # "collision": 1e-1,
+                "capture": 1.0,  # capture 100 is too high, make the agent overfit to move to one single direction
+                # capture 10 is too high for two agents with arena
+                # "collision": -10,
             },
         },
         # visualization

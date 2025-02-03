@@ -89,8 +89,10 @@ class PursuitEnv:
         )
 
         # visualize arena
-        self.arena_size = self.cfg.get("arena", {}).get("arena_size", 2)
-        self.visualize_arena()
+        self.use_arena = self.cfg.get("arena", {}).get("use_arena", False)
+        if self.use_arena:
+            self.arena_size = self.cfg.get("arena", {}).get("arena_size", 2)
+            self.visualize_arena()
 
         # add camera
         if self.cfg.get("visualize_camera", False):
@@ -106,6 +108,7 @@ class PursuitEnv:
         self.scene.build(n_envs=self.num_envs)
 
         # prepare reward functions and multiply reward scales by dt
+        self.collision_threshold = self.cfg.get("agent", {}).get("collision_threshold", 0.2)
         self.reward_scales = self.cfg.get("reward", {}).get("reward_scales", {})
         self.reward_functions, self.episode_sums = dict(), dict()
         for name in self.reward_scales.keys():
@@ -255,14 +258,24 @@ class PursuitEnv:
             return
 
         # sample initial positions for agents and target
-        pos_range = 1.0
-        self.agent_init_pos = torch.empty((len(envs_idx), self.num_agents, 3), device=self.device).uniform_(
-            -pos_range, pos_range
-        )
-        self.agent_init_pos[..., 2] = 1.0  # Set z-coordinate to 1.0
+        if self.use_arena:
+            pos_range = 1.0
+            self.target_init_pos = torch.empty((len(envs_idx), 3), device=self.device).uniform_(-pos_range, pos_range)
+            self.agent_init_pos = torch.empty((len(envs_idx), self.num_agents, 3), device=self.device).uniform_(
+                -pos_range, pos_range
+            )
+        else:
+            # Initialize target at origin
+            self.target_init_pos = torch.zeros((len(envs_idx), 3), device=self.device)
 
-        self.target_init_pos = torch.empty((len(envs_idx), 3), device=self.device).uniform_(-pos_range, pos_range)
+            # Initialize agents 1-2 meters away from target in xy plane
+            angles = torch.rand((len(envs_idx), self.num_agents), device=self.device) * 2 * math.pi
+            distances = torch.rand((len(envs_idx), self.num_agents), device=self.device) + 1.0  # 1-2 meters
+            self.agent_init_pos = torch.zeros((len(envs_idx), self.num_agents, 3), device=self.device)
+            self.agent_init_pos[..., 0] = distances * torch.cos(angles)  # x coordinate
+            self.agent_init_pos[..., 1] = distances * torch.sin(angles)  # y coordinate
         self.target_init_pos[..., 2] = 1.0  # Set z-coordinate to 1.0
+        self.agent_init_pos[..., 2] = 1.0  # Set z-coordinate to 1.0
 
         # reset agents
         self.agent_pos[envs_idx] = self.agent_init_pos
@@ -306,14 +319,14 @@ class PursuitEnv:
 
         # arena force, receive very large force when out of arena
         force_arena = torch.zeros_like(force_pursuer)
-        target_origin_dist = torch.norm(self.target_pos[..., :2], p=2, dim=-1, keepdim=True)
-        force_arena_vec = -self.target_pos[..., :2] / (target_origin_dist + 1e-5)  # unit vector pointing to center
-        out_of_arena = torch.norm(self.target_pos[..., :2], p=2, dim=-1, keepdim=True) > self.arena_size
-        force_arena[..., :2] = out_of_arena.float() * force_arena_vec * (1 / 1e-5) + (
-            ~out_of_arena
-        ).float() * force_arena_vec * (1 / ((self.arena_size - target_origin_dist) + 1e-5))
+        if self.use_arena:
+            target_origin_dist = torch.norm(self.target_pos[..., :2], p=2, dim=-1, keepdim=True)
+            force_arena_vec = -self.target_pos[..., :2] / (target_origin_dist + 1e-5)  # unit vector pointing to center
+            out_of_arena = torch.norm(self.target_pos[..., :2], p=2, dim=-1, keepdim=True) > self.arena_size
+            force_arena[..., :2] = out_of_arena.float() * force_arena_vec * (1 / 1e-5) + (
+                ~out_of_arena
+            ).float() * force_arena_vec * (1 / ((self.arena_size - target_origin_dist) + 1e-5))
 
-        # force_arena = torch.zeros_like(force_pursuer)
         force = force_pursuer + force_arena
 
         # visualize forces for debugging
@@ -364,15 +377,13 @@ class PursuitEnv:
             reward: -1 for each pair of agents that are too close
         """
         distances = torch.norm(self.rel_pos_agents[..., :2], p=2, dim=-1)  # [num_envs, num_agents, num_agents]
-
-        collision_threshold = 0.2
-        close_pairs = (distances < collision_threshold).sum(dim=(1, 2))  # [num_envs]
+        close_pairs = (distances < self.collision_threshold).sum(dim=(1, 2))  # [num_envs]
 
         # Subtract self-distances and divide by 2 (since matrix is symmetric)
         num_collisions = (close_pairs - self.num_agents) / 2
 
         # Return negative reward for each collision
-        return -num_collisions
+        return num_collisions
 
     # ------------ debug visualization ----------------
     def visualize_forces(self, force_pursuer, force_arena, total_force, env_idx=0):
