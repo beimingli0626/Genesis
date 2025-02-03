@@ -42,9 +42,9 @@ class Policy(GaussianMixin, Model):
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
 
         self.net = nn.Sequential(
-            nn.Linear(self.num_observations, 128),
+            nn.Linear(self.num_observations, 256),
             nn.ELU(),
-            nn.Linear(128, 128),
+            nn.Linear(256, 128),
             nn.ELU(),
             nn.Linear(128, self.num_actions),
         )
@@ -60,7 +60,7 @@ class Value(DeterministicMixin, Model):
         DeterministicMixin.__init__(self, clip_actions)
 
         self.net = nn.Sequential(
-            nn.Linear(self.num_observations, 128), nn.ELU(), nn.Linear(128, 128), nn.ELU(), nn.Linear(128, 1)
+            nn.Linear(self.num_observations, 256), nn.ELU(), nn.Linear(256, 128), nn.ELU(), nn.Linear(128, 1)
         )
 
     def compute(self, inputs, role):
@@ -117,9 +117,9 @@ def get_env_cfg():
         "dt": 0.01,
         # agent
         "agent": {
-            # "num_agents": 2,
-            "num_observations": 3,
-            "num_actions": 3,
+            "num_agents": 3,
+            "num_observations": 3,  # number of observations per agent
+            "num_actions": 3,  # number of actions per agent
             "at_target_threshold": 0.3,
             "clip_agent_actions": 1.5,
         },
@@ -198,7 +198,7 @@ def main():
     )
 
     # create trainer, note that genesis is agnostic to "headless"
-    cfg_trainer = {"timesteps": 8000, "headless": True}
+    cfg_trainer = {"timesteps": 16000, "headless": True}
     trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 
     # train

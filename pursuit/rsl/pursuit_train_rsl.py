@@ -5,7 +5,7 @@ import shutil
 from datetime import datetime
 
 import genesis as gs
-from pursuit_env import PursuitEnv
+from pursuit_env_rsl import PursuitEnv
 from rsl_rl.runners import OnPolicyRunner
 
 
@@ -73,7 +73,7 @@ def get_cfgs():
         "debug_viz": True,
     }
     obs_cfg = {
-        "num_obs": 3,    
+        "num_obs": 3,
     }
     reward_cfg = {
         "reward_scales": {
@@ -82,8 +82,7 @@ def get_cfgs():
             # "capture": 1.0,
         },
     }
-    command_cfg = {
-    }
+    command_cfg = {}
 
     return env_cfg, obs_cfg, reward_cfg, command_cfg
 
@@ -95,18 +94,18 @@ def main():
     parser.add_argument("-B", "--num_envs", type=int, default=2)
     parser.add_argument("--max_iterations", type=int, default=300)
     args = parser.parse_args()
-    
+
     gs.init(logging_level="error")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_dir = f"logs/{args.exp_name}/{timestamp}"
     env_cfg, obs_cfg, reward_cfg, command_cfg = get_cfgs()
     train_cfg = get_train_cfg(args.exp_name, args.max_iterations)
-    
+
     if os.path.exists(log_dir):
         shutil.rmtree(log_dir)
     os.makedirs(log_dir, exist_ok=True)
-    
+
     env_cfg, obs_cfg, reward_cfg, command_cfg = get_cfgs()
 
     env = PursuitEnv(
@@ -117,17 +116,16 @@ def main():
         command_cfg=command_cfg,
         show_viewer=args.vis,
     )
-    
+
     runner = OnPolicyRunner(env, train_cfg, log_dir, device="cuda:0")
-    
+
     pickle.dump(
         [env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg],
         open(f"{log_dir}/cfgs.pkl", "wb"),
     )
 
     runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=False)
-    
+
 
 if __name__ == "__main__":
     main()
-    
