@@ -19,9 +19,13 @@ class PursuitEnv:
         self.cfg = cfg
 
         # simulation settings
-        self.dt = self.cfg.get("dt", 0.01)  # run in 100hz
+        self.dt = self.cfg.get("dt", 0.01)  # run in 100hz, default
+        self.step_dt = self.cfg.get(
+            "step_dt", 0.2
+        )  # time for agent act on high level action, multiple low-level steps = 1 high-level step
         self.episode_length_s = self.cfg.get("episode_length_s", 5)
-        self.max_episode_length = math.ceil(self.episode_length_s / self.dt)
+        self.max_episode_length = math.ceil(self.episode_length_s / self.step_dt)
+        self.action_steps = int(self.step_dt / self.dt)  # number of low-level steps for 1 high-level step
 
         # environment settings
         self.num_envs = self.cfg.get("num_envs", 2)
@@ -112,7 +116,7 @@ class PursuitEnv:
         self.reward_scales = self.cfg.get("reward", {}).get("reward_scales", {})
         self.reward_functions, self.episode_sums = dict(), dict()
         for name in self.reward_scales.keys():
-            self.reward_scales[name] *= self.dt
+            self.reward_scales[name] *= self.step_dt
             self.reward_functions[name] = getattr(self, "_reward_" + name)
             self.episode_sums[name] = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
 
@@ -170,19 +174,20 @@ class PursuitEnv:
         actions_reshaped = self.agent_actions.view(self.num_envs, self.num_agents, 3)
         actions_reshaped[..., 2] = 0.0  # keep Z constant for all agents
 
-        # Update positions for all agents
-        new_agent_pos = self.agent_pos + self.dt * actions_reshaped
-        for i in range(self.num_agents):
-            self.agents[i].set_pos(new_agent_pos[:, i], zero_velocity=True)
+        for _ in range(self.action_steps):
+            # Update positions for all agents
+            for i in range(self.num_agents):
+                self.agent_pos[:, i] = self.agents[i].get_pos()
+                self.agents[i].set_pos(self.agent_pos[:, i] + self.dt * actions_reshaped[:, i], zero_velocity=True)
 
-        # calculate and apply target action
-        target_actions = self.get_repulsive_action()
-        self.target_actions = torch.clip(target_actions, -self.clip_target_actions, self.clip_target_actions)
-        new_target_pos = self.target_pos + self.dt * self.target_actions
-        self.target.set_pos(new_target_pos, zero_velocity=True)
+            # calculate and apply target action
+            target_actions = self.get_repulsive_action()
+            self.target_actions = torch.clip(target_actions, -self.clip_target_actions, self.clip_target_actions)
+            self.target_pos[:] = self.target.get_pos()
+            self.target.set_pos(self.target_pos + self.dt * self.target_actions, zero_velocity=True)
 
-        # step genesis scene
-        self.scene.step()
+            # step genesis scene
+            self.scene.step()
 
         # update buffers
         self.episode_length.add_(1)
@@ -313,7 +318,8 @@ class PursuitEnv:
         """
         # Calculate pursuer forces for all agents at once
         force_pursuer = torch.zeros((self.num_envs, 3), device=self.device, dtype=gs.tc_float)
-        rel_pos_xy = self.rel_pos[..., :2]  # [num_envs, num_agents, 2]
+        rel_pos = self.target_pos.unsqueeze(1) - self.agent_pos  # [num_envs, num_agents, 3]
+        rel_pos_xy = rel_pos[..., :2]  # [num_envs, num_agents, 2]
         norm = torch.norm(rel_pos_xy, p=2, dim=-1, keepdim=True) ** 2 + 1e-5  # [num_envs, num_agents, 1]
         force_pursuer[..., :2] = (rel_pos_xy / norm).sum(dim=1)  # sum over agents, result is [num_envs, 2]
 

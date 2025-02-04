@@ -84,7 +84,7 @@ def get_train_cfg(log_dir, experiment_name):
         "lambda": 0.95,  # TD(lambda) coefficient (lam) for computing returns and advantages
         "learning_rate": 3e-4,  # learning rate
         "learning_rate_scheduler": KLAdaptiveRL,  # learning rate scheduler class
-        "learning_rate_scheduler_kwargs": {"kl_threshold": 0.01, "min_lr": 1e-5},  # learning rate scheduler's kwargs
+        "learning_rate_scheduler_kwargs": {"kl_threshold": 0.01, "min_lr": 1e-6},  # learning rate scheduler's kwargs
         "state_preprocessor": None,  # state preprocessor class (see skrl.resources.preprocessors)
         "state_preprocessor_kwargs": {},  # state preprocessor's kwargs (e.g. {"size": env.observation_space})
         "value_preprocessor": None,  # value preprocessor class (see skrl.resources.preprocessors)
@@ -104,7 +104,7 @@ def get_train_cfg(log_dir, experiment_name):
         "experiment": {
             "directory": log_dir,  # experiment's parent directory
             "experiment_name": experiment_name,  # experiment name
-            "write_interval": 40,  # TensorBoard writing interval (timesteps), "auto" save 100 records
+            "write_interval": 10,  # TensorBoard writing interval (timesteps), "auto" save 100 records
             "checkpoint_interval": "auto",  # interval for checkpoints (timesteps), "auto" save 10 checkpoints
             "store_separately": False,  # whether to store checkpoints separately
             "wandb": True,  # whether to use Weights & Biases
@@ -123,9 +123,10 @@ def get_env_cfg():
         "num_envs": 1024,
         "episode_length_s": 5.0,
         "dt": 0.01,
+        "step_dt": 0.1,  # time for agent act on high level action, multiple low-level steps = 1 high-level step
         # agent
         "agent": {
-            "num_agents": 2,
+            "num_agents": 1,
             "num_observations": 3,  # number of observations per agent
             "num_actions": 3,  # number of actions per agent
             "at_target_threshold": 0.5,
@@ -145,7 +146,7 @@ def get_env_cfg():
                 "distance": -1,
                 # "target": 10.0,
                 # "smooth": 1e-4,  # two training phase, only consider smooth reward in the second phase
-                "capture": 1.0,  # capture 100 is too high, make the agent overfit to move to one single direction
+                "capture": 10.0,  # capture 100 is too high, make the agent overfit to move to one single direction
                 # capture 10 is too high for two agents with arena
                 # "collision": -10,
             },
@@ -164,6 +165,7 @@ def main():
     parser.add_argument("-v", "--vis", action="store_true", default=False)
     parser.add_argument("-d", "--device", type=str, default="cuda:0")
     parser.add_argument("-l", "--log_dir", type=str, default="logs/1v1_pursuit")
+    parser.add_argument("-n", "--num_episodes", type=int, default=100)
     args = parser.parse_args()
 
     # create experiment directory
@@ -212,7 +214,7 @@ def main():
     )
 
     # create trainer, note that genesis is agnostic to "headless"
-    cfg_trainer = {"timesteps": 16000, "headless": True}
+    cfg_trainer = {"timesteps": int(args.num_episodes * env.max_episode_length), "headless": True}
     trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 
     # train
