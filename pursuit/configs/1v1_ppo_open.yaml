@@ -54,9 +54,12 @@ env_cfg:
                               # note that this cannot be too large, otherwise distance rewards might explode
   reward:
     reward_scales:             # reward scaling factors
-      distance: -1             # distance to target penalty
+      # distance: -1             # distance to target penalty
+      target: 1.0           # reward for moving towards target, more stable in training than distance
+                            # but this reward favor sudden change in speed, not smooth in motion
       capture: 100.0           # reward for capturing target, 100 cause overfit to moving towards certain direction, 10 doesn't work well 
                                 # TODO: find a better way to balance the rewards, maybe increase entropy loss scale? 
+      time: -1.0           # penalty for time
   visualize_camera: false      # enable camera visualization
   max_visualize_FPS: 60       # maximum FPS for visualization
   debug_viz: true             # enable debug visualization 

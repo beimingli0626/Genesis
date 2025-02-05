@@ -148,6 +148,7 @@ class PursuitEnv:
         self.last_agent_pos = torch.zeros_like(self.agent_pos)
         self.last_target_pos = torch.zeros_like(self.target_pos)
         self.last_min_dist = torch.zeros_like(self.min_dist)  # used for target reward
+        self.last_avg_dist = torch.zeros_like(self.avg_dist)  # used for target reward
 
         self.episode_length = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
         self.last_agent_actions = torch.zeros_like(self.agent_actions)  # used for smooth reward
@@ -178,6 +179,7 @@ class PursuitEnv:
         self.last_agent_pos[:] = self.agent_pos[:]
         self.last_target_pos[:] = self.target_pos[:]
         self.last_min_dist[:] = self.min_dist[:]
+        self.last_avg_dist[:] = self.avg_dist[:]
 
         # apply agent actions
         self.agent_actions = torch.clip(actions, -self.clip_agent_actions, self.clip_agent_actions)
@@ -362,12 +364,12 @@ class PursuitEnv:
     def _reward_target(self):
         """Reward for moving towards the target
 
-        Reward is the difference in the square of distance to target between current and previous step
-        NOTE: this is not a good reward function, it is just for testing; it will drive the agent to
-        stay within certain distance from the target (why?)
+        Reward is the difference distance to target between current and previous step
+        NOTE: most be used together with time reward, otherwise it will drive the agent to
+        stay within certain distance from the target and never catch
         """
-        target_rew = self.last_min_dist - self.min_dist
-        return target_rew
+        # return self.last_min_dist - self.min_dist
+        return self.last_avg_dist - self.avg_dist
 
     def _reward_smooth(self):
         """Reward for smooth action
@@ -384,6 +386,14 @@ class PursuitEnv:
             reward: 1 if target is captured, 0 otherwise
         """
         return self.min_dist < self.at_target_threshold  # distance in xy within threshold = capture
+
+    def _reward_time(self):
+        """Penalty for time, coefficient should be negative
+
+        Returns:
+            reward: 1 for each step
+        """
+        return 1.0
 
     def _reward_collision(self):
         """Reward (penalty) for agents getting too close to each other

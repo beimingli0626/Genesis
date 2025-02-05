@@ -53,8 +53,10 @@ env_cfg:
     init_dist: 1.5            # initial distance between agent and target
   reward:
     reward_scales:             # reward scaling factors
-      distance: -1             # distance to target penalty
+      # distance: -1             # distance to target penalty
+      target: 1.0           # reward for moving towards target
       capture: 10.0           # reward for capturing target
+      time: -2.0           # penalty for time
   visualize_camera: false      # enable camera visualization
   max_visualize_FPS: 60       # maximum FPS for visualization
   debug_viz: true             # enable debug visualization 
