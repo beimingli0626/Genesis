@@ -1,6 +1,5 @@
 import argparse
 import os
-import pickle
 import shutil
 from datetime import datetime
 import yaml
@@ -88,7 +87,7 @@ def get_configs(log_dir, experiment_type, experiment_name):
     # Add dynamic configuration that shouldn't be in YAML
     train_cfg_dict["experiment"].update(
         {
-            "directory": log_dir,
+            "directory": os.path.join(log_dir, experiment_type),
             "experiment_name": experiment_name,
             "wandb_kwargs": {
                 "project": "pursuit-evasion",

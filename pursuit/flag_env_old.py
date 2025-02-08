@@ -4,16 +4,11 @@ import genesis as gs
 
 AGENT_COLORS = [
     (1.0, 0.0, 0.0),  # red
-    (1.0, 0.5, 0.0),  # orange
-    (1.0, 1.0, 0.0),  # yellow
-    (0.0, 1.0, 0.0),  # green
     (0.0, 0.0, 1.0),  # blue
-    (0.5, 0.0, 1.0),  # purple
-    (0.0, 0.0, 0.0),  # black
 ]
 
 
-class PursuitEnv:
+class CaptureTheFlagEnv:
     def __init__(self, cfg, show_viewer=False, device="cuda"):
         self.device = torch.device(device)
         self.cfg = cfg
@@ -23,7 +18,7 @@ class PursuitEnv:
         self.step_dt = self.cfg.get("step_dt", 0.2)  # multiple low-level steps = 1 high-level step
         self.episode_length_s = self.cfg.get("episode_length_s", 5)
         self.max_episode_length = math.ceil(self.episode_length_s / self.step_dt)
-        self.action_steps = int(self.step_dt / self.dt)  # number of low-level steps for 1 high-level step
+        self.control_steps = int(self.step_dt / self.dt)  # number of low-level steps for 1 high-level step
 
         # environment settings
         self.num_envs = self.cfg.get("num_envs", 2)
@@ -148,6 +143,7 @@ class PursuitEnv:
         self.last_agent_pos = torch.zeros_like(self.agent_pos)
         self.last_target_pos = torch.zeros_like(self.target_pos)
         self.last_min_dist = torch.zeros_like(self.min_dist)  # used for target reward
+        self.last_avg_dist = torch.zeros_like(self.avg_dist)  # used for target reward
 
         self.episode_length = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
         self.last_agent_actions = torch.zeros_like(self.agent_actions)  # used for smooth reward
@@ -178,13 +174,14 @@ class PursuitEnv:
         self.last_agent_pos[:] = self.agent_pos[:]
         self.last_target_pos[:] = self.target_pos[:]
         self.last_min_dist[:] = self.min_dist[:]
+        self.last_avg_dist[:] = self.avg_dist[:]
 
         # apply agent actions
         self.agent_actions = torch.clip(actions, -self.clip_agent_actions, self.clip_agent_actions)
         actions_reshaped = self.agent_actions.view(self.num_envs, self.num_agents, 3)
         actions_reshaped[..., 2] = 0.0  # keep Z constant for all agents
 
-        for _ in range(self.action_steps):
+        for _ in range(self.control_steps):
             # Update positions for all agents
             for i in range(self.num_agents):
                 self.agent_pos[:, i] = self.agents[i].get_pos()
@@ -362,12 +359,12 @@ class PursuitEnv:
     def _reward_target(self):
         """Reward for moving towards the target
 
-        Reward is the difference in the square of distance to target between current and previous step
-        NOTE: this is not a good reward function, it is just for testing; it will drive the agent to
-        stay within certain distance from the target (why?)
+        Reward is the difference distance to target between current and previous step
+        NOTE: most be used together with time reward, otherwise it will drive the agent to
+        stay within certain distance from the target and never catch
         """
-        target_rew = self.last_min_dist - self.min_dist
-        return target_rew
+        # return self.last_min_dist - self.min_dist
+        return self.last_avg_dist - self.avg_dist
 
     def _reward_smooth(self):
         """Reward for smooth action
@@ -384,6 +381,14 @@ class PursuitEnv:
             reward: 1 if target is captured, 0 otherwise
         """
         return self.min_dist < self.at_target_threshold  # distance in xy within threshold = capture
+
+    def _reward_time(self):
+        """Penalty for time, coefficient should be negative
+
+        Returns:
+            reward: 1 for each step
+        """
+        return 1.0
 
     def _reward_collision(self):
         """Reward (penalty) for agents getting too close to each other
