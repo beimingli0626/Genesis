@@ -3,63 +3,31 @@ import os
 import shutil
 from datetime import datetime
 import yaml
+import torch
 
 import genesis as gs
 from flag_env import CaptureTheFlagEnv
 
-import torch
-import torch.nn as nn
-
-from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
-from skrl.memories.torch import RandomMemory
-from skrl.models.torch import DeterministicMixin, GaussianMixin, Model
-from skrl.resources.schedulers.torch import KLAdaptiveRL
-from skrl.trainers.torch import SequentialTrainer
-from skrl.utils import set_seed
-
+from rsl_rl.runners import OnPolicyRunner
 from wandb_config import WANDB_API_KEY, WANDB_ENTITY
 
+os.environ["WANDB_USERNAME"] = WANDB_ENTITY
 os.environ["WANDB_API_KEY"] = WANDB_API_KEY
 
-set_seed()  # random seed
-# set_seed(42) # for fixed seed
 
-
-def get_configs(log_dir, experiment_type, experiment_name):
+def get_configs(experiment_type):
     # Load config from YAML file
     config_path = os.path.join("./configs", f"{experiment_type}.yaml")
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
-
-    train_cfg_dict = config["train_cfg"]
-    env_cfg_dict = config["env_cfg"]
-
-    # Add dynamic configuration that shouldn't be in YAML
-    train_cfg_dict["experiment"].update(
-        {
-            "directory": os.path.join(log_dir, experiment_type),
-            "experiment_name": experiment_name,
-            "wandb_kwargs": {
-                "project": "capture-the-flag",
-                "entity": WANDB_ENTITY,
-                "group": experiment_type,
-            },
-        }
-    )
-
-    if train_cfg_dict["learning_rate_scheduler"] == "KLAdaptiveRL":
-        train_cfg_dict["learning_rate_scheduler"] = KLAdaptiveRL
-    else:
-        train_cfg_dict["learning_rate_scheduler"] = None
-
-    return train_cfg_dict, env_cfg_dict
+    return config
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--vis", action="store_true", default=False)
     parser.add_argument("-d", "--device", type=str, default="cuda:0")
-    parser.add_argument("-e", "--experiment_type", type=str, default="1v1_ppo_open")
+    parser.add_argument("-e", "--experiment_type", type=str, default="1v1_ppo")
     parser.add_argument("-l", "--log_dir", type=str, default="logs")
     args = parser.parse_args()
 
@@ -77,18 +45,19 @@ def main():
         device = torch.device("cpu")
 
     # get configs
-    train_cfg_dict, env_cfg = get_configs(args.log_dir, args.experiment_type, experiment_name)
-    train_cfg = PPO_DEFAULT_CONFIG.copy()
-    train_cfg.update(train_cfg_dict)
-    train_cfg["env_cfg"] = env_cfg  # this will be logged to wandb
+    config = get_configs(args.experiment_type)
 
     # init genesis
-    gs.init(logging_level="")
-    # gs.init(logging_level="error")
+    # gs.init()
+    gs.init(logging_level="error")
 
     # create environment
-    env = CaptureTheFlagEnv(cfg=env_cfg, show_viewer=args.vis, device=device)
-
+    env = CaptureTheFlagEnv(cfg=config["env_cfg"], show_viewer=args.vis, device=device)
     _, _ = env.reset()
-    for i in range(1000):
-        env.step(torch.zeros((env.num_envs, env.num_actions), device=env.device))
+
+    runner = OnPolicyRunner(env, train_cfg=config["train_cfg"], log_dir=log_dir, device="cuda:0")
+    runner.learn(num_learning_iterations=config["train_cfg"]["num_learning_iterations"], init_at_random_ep_len=False)
+
+
+if __name__ == "__main__":
+    main()
