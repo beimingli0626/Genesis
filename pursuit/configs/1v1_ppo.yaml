@@ -1,36 +1,73 @@
-train_cfg:
-  num_episodes: 100            # number of episodes to train for
-  rollouts: 10                 # number of rollouts before updating
-  learning_epochs: 5           # number of learning epochs during each update
-  mini_batches: 4             # number of mini batches during each learning epoch
-  discount_factor: 0.99       # discount factor (gamma)
-  lambda: 0.95                # TD(lambda) coefficient for computing returns and advantages
-  learning_rate: 0.0003       # learning rate
-  learning_rate_scheduler: "KLAdaptiveRL"        # learning rate scheduler class
-  learning_rate_scheduler_kwargs:                 # learning rate scheduler kwargs
-    kl_threshold: 0.01                           # KL divergence threshold
-    min_lr: 0.000001                            # minimum learning rate
-  state_preprocessor: null                       # state preprocessor class
-  state_preprocessor_kwargs: {}                  # state preprocessor kwargs
-  value_preprocessor: null                       # value preprocessor class
-  value_preprocessor_kwargs: {}                  # value preprocessor kwargs
-  random_timesteps: 0         # random exploration steps
-  learning_starts: 0          # learning starts after this many steps
-  grad_norm_clip: 1.0        # clipping coefficient for the norm of the gradients
-  ratio_clip: 0.2            # clipping coefficient for computing the clipped surrogate objective
-  value_clip: 0.2            # clipping coefficient for computing the value loss
-  clip_predicted_values: true # clip predicted values during value loss computation
-  entropy_loss_scale: 0.01   # entropy loss scaling factor
-  value_loss_scale: 1.0      # value loss scaling factor
-  kl_threshold: 0.0          # KL divergence threshold for early stopping
-  rewards_shaper: null       # rewards shaping function
-  time_limit_bootstrap: true # bootstrap at timeout termination
-  mixed_precision: true      # enable automatic mixed precision
+seed: 42
+
+models:
+  separate: True
+  policy:  # gaussian model
+    class: "GaussianMixin"
+    clip_actions: False # never enable this if use mixed precision
+    clip_log_std: True
+    initial_log_std: 0.0
+    min_log_std: -20.0
+    max_log_std: 2.0
+    input_shape: "Shape.STATES"
+    hiddens: [512, 256, 128]
+    hidden_activation: ["elu", "elu", "elu"]
+    output_shape: "Shape.ACTIONS"
+    output_activation: ""
+    output_scale: 1.0
+  value:  # deterministic model
+    class: "DeterministicMixin"
+    clip_actions: False
+    input_shape: "Shape.STATES"
+    hiddens: [512, 256, 128]
+    hidden_activation: ["elu", "elu", "elu"]
+    output_shape: "Shape.ONE"
+    output_activation: ""
+    output_scale: 1.0
+
+memory:
+  class: "RandomMemory"
+  memory_size: -1  # -1: automatically determined value
+
+agent:
+  class: "PPO"
+  rollouts: 10
+  learning_epochs: 5
+  mini_batches: 4
+  discount_factor: 0.99
+  lambda: 0.95
+  learning_rate: 3.e-4
+  learning_rate_scheduler: "KLAdaptiveLR"
+  learning_rate_scheduler_kwargs:
+    kl_threshold: 0.01
+  state_preprocessor: null
+  state_preprocessor_kwargs: {}
+  value_preprocessor: null
+  value_preprocessor_kwargs: {}
+  random_timesteps: 0
+  learning_starts: 0
+  grad_norm_clip: 1.0
+  ratio_clip: 0.2
+  value_clip: 0.2
+  clip_predicted_values: True
+  entropy_loss_scale: 0.01
+  value_loss_scale: 1.0
+  kl_threshold: 0
+  rewards_shaper: null
+  time_limit_bootstrap: true  # help reward stable when episode truncated
+  mixed_precision: true
+  # logging and checkpoint
   experiment:
-    write_interval: 10           # TensorBoard writing interval (timesteps)
-    checkpoint_interval: "auto"  # interval for checkpoints (timesteps)
-    store_separately: false      # whether to store checkpoints separately
-    wandb: true                  # whether to use Weights & Biases
+    directory: "logs"
+    experiment_name: ""
+    write_interval: 10
+    checkpoint_interval: "auto"
+    store_separately: false
+
+trainer:
+  class: "SequentialTrainer"
+  timesteps: 10000
+  environment_info: "log"
 
 env_cfg:
   num_envs: 1024                # number of environments to run in parallel
@@ -43,6 +80,7 @@ env_cfg:
     num_actions: 3              # number of actions per agent
     tag_threshold: 0.5          # distance threshold for tagging
     clip_agent_actions: 2.0     # action clipping range, velocity
+    agent_size: 0.05            # size of agent
   arena:
     arena_size: 4.0            # edge length of arena, which would be a square
   reward:

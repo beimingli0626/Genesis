@@ -1,6 +1,8 @@
 import math
 import torch
 import genesis as gs
+import gymnasium
+import numpy as np
 
 AGENT_COLORS = {
     "RED": (1.0, 0.0, 0.0),  # red
@@ -60,7 +62,7 @@ class CaptureTheFlagEnv:
         self.scene.add_entity(gs.morphs.Plane())
 
         # add red team (spheres)
-        self.size_agent = self.cfg.get("agent", {}).get("size_agent", 0.05)
+        self.size_agent = self.cfg.get("agent", {}).get("agent_size", 0.05)
         self.R_agents = []
         for i in range(self.num_agents):
             agent = self.scene.add_entity(
@@ -97,7 +99,7 @@ class CaptureTheFlagEnv:
             self.B_agents.append(agent)
 
         # generate arena
-        self.arena_size = self.cfg.get("arena", {}).get("arena_size", 2)
+        self.arena_size = self.cfg.get("arena", {}).get("arena_size", 4)
         self.generate_arena()
 
         # build scene
@@ -133,11 +135,11 @@ class CaptureTheFlagEnv:
         self.B_actions = torch.zeros(
             (self.num_envs, self.num_agents, self.num_actions), device=self.device, dtype=gs.tc_float
         )
+        self.min_dist = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
 
         # initialize buffers need to be reset in reset()
         self.R_pos = torch.zeros((self.num_envs, self.num_agents, 3), device=self.device, dtype=gs.tc_float)
         self.B_pos = torch.zeros((self.num_envs, self.num_agents, 3), device=self.device, dtype=gs.tc_float)
-        self.min_dist = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
         self.episode_length = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
         self.extras = {}  # extra information for logging
 
@@ -175,6 +177,7 @@ class CaptureTheFlagEnv:
             )
 
     def step(self, actions):
+        # always manually clip actions when mixed precision training
         clipped_actions = torch.clip(actions, -self.clip_agent_actions, self.clip_agent_actions)
         self.R_actions = clipped_actions.view(self.num_envs, self.num_agents, 3)
         self.R_actions[..., 2] = 0.0  # keep Z constant for all agents
@@ -182,6 +185,7 @@ class CaptureTheFlagEnv:
         self.B_actions = torch.randn_like(self.R_actions)  # random move
         self.B_actions[..., 2] = 0.0  # keep Z constant for all agents
 
+        # TODO: restrict acceleration
         for _ in range(self.control_steps):
             # Update positions for all agents
             for i in range(self.num_agents):
@@ -210,8 +214,8 @@ class CaptureTheFlagEnv:
         for i in range(self.num_agents):
             self.B_pos[:, i] = self.B_agents[i].get_pos()
 
-        rel_pos = self.R_pos - self.B_pos  # [num_envs_idx, 1, 3]
-        self.min_dist = torch.norm(rel_pos, dim=-1).squeeze(-1)  # [num_envs_idx]
+        rel_pos = self.R_pos - self.B_pos  # [num_envs_idx, num_agents, 3]
+        self.min_dist = torch.norm(rel_pos, dim=-1).amin(dim=-1)  # [num_envs_idx]
 
         # check truncate and reset
         # self.terminated = self.min_dist < self.at_target_threshold
@@ -256,7 +260,6 @@ class CaptureTheFlagEnv:
         if len(envs_idx) == 0:
             return
 
-        # Calculate position ranges for each team
         half_arena = self.arena_size / 2
 
         # Red team: negative x side (-arena_size/2 to 0)
@@ -275,7 +278,6 @@ class CaptureTheFlagEnv:
             -half_arena + self.size_agent, half_arena - self.size_agent
         )
 
-        # Combine positions into 3D coordinates (z=0 for ground plane)
         self.R_pos[envs_idx] = torch.stack([R_pos_x, R_pos_y, torch.zeros_like(R_pos_x)], dim=-1)
         self.B_pos[envs_idx] = torch.stack([B_pos_x, B_pos_y, torch.zeros_like(B_pos_x)], dim=-1)
 
@@ -347,16 +349,19 @@ class CaptureTheFlagEnv:
     #     return self.num_actions
 
     # ------------ single-agent env required properties ------------
-    # @property
-    # def state_space(self):
-    #     # TODO: change to actual state space
-    #     # for multiagent env, this is the global state space
-    #     return self.agent_pos.shape[-1]
+    @property
+    def state_space(self):
+        # used by runner, but actually only used for multiagent env
+        # for multiagent env, this is the global state space
+        # TODO: change to actual state space
+        return self.R_pos.shape[-1]
 
     @property
     def observation_space(self):
-        return self.num_observations
+        # need to be gymnasium space for initiate skrl model
+        return gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_observations,))
 
     @property
     def action_space(self):
-        return self.num_actions
+        # need to be gymnasium space for initiate skrl model
+        return gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_actions,))
