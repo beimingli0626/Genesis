@@ -3,12 +3,10 @@ import os
 
 import genesis as gs
 from flag_env import CaptureTheFlagEnv
+from tqdm import tqdm
 
 import torch
 from skrl.utils.runner.torch.runner import Runner
-from wandb_config import WANDB_API_KEY, WANDB_ENTITY
-
-os.environ["WANDB_API_KEY"] = WANDB_API_KEY
 
 
 def main():
@@ -18,10 +16,6 @@ def main():
     parser.add_argument("-e", "--experiment_type", type=str, default="2v1_ppo")
     parser.add_argument("-l", "--log_dir", type=str, default="./logs")
     args = parser.parse_args()
-
-    # create experiment directory
-    log_dir = os.path.join(args.log_dir, args.experiment_type)
-    os.makedirs(log_dir, exist_ok=True)
 
     # set device
     device = torch.device("cuda:0" if "cuda" in args.device.lower() else "cpu")
@@ -33,13 +27,10 @@ def main():
     cfg = Runner.load_cfg_from_yaml(config_path)
     cfg["agent"]["experiment"].update(
         {
-            "directory": log_dir,
-            "wandb": True,
-            "wandb_kwargs": {
-                "project": "capture-the-flag",
-                "entity": WANDB_ENTITY,
-                "group": args.experiment_type,
-            },
+            "write_interval": 0,  # disable logging, not create directory
+            "checkpoint_interval": 0,  # disable checkpointing, not create directory
+            "directory": "",
+            "wandb": False,
         }
     )
 
@@ -51,9 +42,17 @@ def main():
 
     # create runner
     runner = Runner(cfg=cfg, env=env)
+    runner._agent.load(
+        os.path.join(
+            args.log_dir, args.experiment_type, cfg["agent"]["eval"]["experiment_name"], "checkpoints", "agent_2500.pt"
+        )
+    )
 
-    # run training
-    runner.run("train")
+    # run inference
+    states, _ = env.reset()
+    for _ in tqdm(range(1000)):
+        actions = runner._agent.inference(states)
+        states, _, _, _, _ = runner._env.step(actions)
 
 
 if __name__ == "__main__":

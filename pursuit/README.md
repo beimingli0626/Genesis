@@ -7,7 +7,13 @@ Currently, one vs one capture the flag is supported, where the target follows a 
 
 Specify the environment name in the command line, and the environment will be loaded from the specified yaml file under `configs/`.
 ```bash
-python3 pursuit_train.py [-v] [-e env_name]
+python3 flag_train.py [-v] [-e env_name]
 ```
 
 If logging training data with `wandb`, make a copy of `wandb_config.example.py` and rename to `wandb_config.py`, then set the `wandb` API key in the file.
+
+## Inference
+Change the `agent/eval/experiment_name` in the yaml file, and run the following command to load the trained model and visualize the simulation.
+```bash
+python3 flag_sim.py [-v] [-e env_name]
+```

@@ -17,13 +17,12 @@ class CaptureTheFlagEnv:
 
         # environment settings
         self.num_envs = self.cfg.get("num_envs", 1024)
-        self.num_agents = self.cfg.get("agent", {}).get("num_agents", 1)  # number of agents per team
-        self.num_observations = (
-            self.cfg.get("agent", {}).get("num_observations", 3) * self.num_agents
-        )  # 3 for each agent
-        self.num_actions = (
-            self.cfg.get("agent", {}).get("num_actions", 3) * self.num_agents
-        )  # 3 for each agent, pursuer team
+        # self.num_agents = self.cfg.get("agent", {}).get("num_agents", 1)  # number of agents per team
+        self.num_left_agents = self.cfg.get("agent", {}).get("num_left_agents", 1)  # number of agents per team
+        self.num_right_agents = self.cfg.get("agent", {}).get("num_right_agents", 1)  # number of agents per team
+        self.num_agents = 1  # use one PPO network
+        self.num_observations = self.cfg.get("agent", {}).get("num_observations", 3)
+        self.num_actions = self.cfg.get("agent", {}).get("num_actions", 3)
 
         # simulation settings
         self.dt = self.cfg.get("dt", 0.01)  # run in 100hz, default
@@ -61,10 +60,10 @@ class CaptureTheFlagEnv:
         # add plane
         self.scene.add_entity(gs.morphs.Plane())
 
-        # add red team (spheres)
+        # add left team (spheres)
         self.size_agent = self.cfg.get("agent", {}).get("agent_size", 0.05)
-        self.R_agents = []
-        for i in range(self.num_agents):
+        self.L_agents = []
+        for i in range(self.num_left_agents):
             agent = self.scene.add_entity(
                 morph=gs.morphs.Mesh(
                     file="meshes/sphere.obj",
@@ -78,11 +77,11 @@ class CaptureTheFlagEnv:
                     ),
                 ),
             )
-            self.R_agents.append(agent)
+            self.L_agents.append(agent)
 
-        # add blue team (spheres)
-        self.B_agents = []
-        for i in range(self.num_agents):
+        # add right team (spheres)
+        self.R_agents = []
+        for i in range(self.num_right_agents):
             agent = self.scene.add_entity(
                 morph=gs.morphs.Mesh(
                     file="meshes/sphere.obj",
@@ -96,7 +95,7 @@ class CaptureTheFlagEnv:
                     ),
                 ),
             )
-            self.B_agents.append(agent)
+            self.R_agents.append(agent)
 
         # generate arena
         self.arena_size = self.cfg.get("arena", {}).get("arena_size", 4)
@@ -129,17 +128,20 @@ class CaptureTheFlagEnv:
         self.truncated = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
         self.reset_buf = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
 
-        self.R_actions = torch.zeros(
-            (self.num_envs, self.num_agents, self.num_actions), device=self.device, dtype=gs.tc_float
+        self.L_actions = torch.zeros(
+            (self.num_envs, self.num_left_agents, self.num_actions), device=self.device, dtype=gs.tc_float
         )
-        self.B_actions = torch.zeros(
-            (self.num_envs, self.num_agents, self.num_actions), device=self.device, dtype=gs.tc_float
+        self.R_actions = torch.zeros(
+            (self.num_envs, self.num_right_agents, self.num_actions), device=self.device, dtype=gs.tc_float
         )
         self.min_dist = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
+        self.rel_dist = torch.zeros(
+            (self.num_envs, self.num_left_agents, self.num_right_agents), device=self.device, dtype=gs.tc_float
+        )
 
         # initialize buffers need to be reset in reset()
-        self.R_pos = torch.zeros((self.num_envs, self.num_agents, 3), device=self.device, dtype=gs.tc_float)
-        self.B_pos = torch.zeros((self.num_envs, self.num_agents, 3), device=self.device, dtype=gs.tc_float)
+        self.L_pos = torch.zeros((self.num_envs, self.num_left_agents, 3), device=self.device, dtype=gs.tc_float)
+        self.R_pos = torch.zeros((self.num_envs, self.num_right_agents, 3), device=self.device, dtype=gs.tc_float)
         self.episode_length = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
         self.extras = {}  # extra information for logging
 
@@ -179,27 +181,27 @@ class CaptureTheFlagEnv:
     def step(self, actions):
         # always manually clip actions when mixed precision training
         clipped_actions = torch.clip(actions, -self.clip_agent_actions, self.clip_agent_actions)
-        self.R_actions = clipped_actions.view(self.num_envs, self.num_agents, 3)
-        self.R_actions[..., 2] = 0.0  # keep Z constant for all agents
+        self.L_actions = clipped_actions.view(self.num_envs, self.num_left_agents, self.num_actions)
+        self.L_actions[..., 2] = 0.0  # keep Z constant for all agents
 
-        self.B_actions = torch.randn_like(self.R_actions)  # random move
-        self.B_actions[..., 2] = 0.0  # keep Z constant for all agents
+        self.R_actions = torch.randn_like(self.R_actions)  # random move
+        self.R_actions[..., 2] = 0.0  # keep Z constant for all agents
 
         # TODO: restrict acceleration
         for _ in range(self.control_steps):
             # Update positions for all agents
-            for i in range(self.num_agents):
+            for i in range(self.num_left_agents):
+                self.L_pos[:, i] = self.L_agents[i].get_pos()
+                new_L_pos = self.get_new_pos(self.L_pos[:, i], self.L_actions[:, i])
+                self.L_agents[i].set_pos(new_L_pos, zero_velocity=True)
+                self.L_agents[i].zero_all_dofs_velocity()
+
+            # calculate and apply target action
+            for i in range(self.num_right_agents):
                 self.R_pos[:, i] = self.R_agents[i].get_pos()
                 new_R_pos = self.get_new_pos(self.R_pos[:, i], self.R_actions[:, i])
                 self.R_agents[i].set_pos(new_R_pos, zero_velocity=True)
                 self.R_agents[i].zero_all_dofs_velocity()
-
-            # calculate and apply target action
-            for i in range(self.num_agents):
-                self.B_pos[:, i] = self.B_agents[i].get_pos()
-                new_B_pos = self.get_new_pos(self.B_pos[:, i], self.B_actions[:, i])
-                self.B_agents[i].set_pos(new_B_pos, zero_velocity=True)
-                self.B_agents[i].zero_all_dofs_velocity()
 
             # step genesis scene
             self.scene.step()
@@ -208,14 +210,17 @@ class CaptureTheFlagEnv:
         self.episode_length.add_(1)
 
         # query agent positions
-        for i in range(self.num_agents):
+        for i in range(self.num_left_agents):
+            self.L_pos[:, i] = self.L_agents[i].get_pos()
+
+        for i in range(self.num_right_agents):
             self.R_pos[:, i] = self.R_agents[i].get_pos()
 
-        for i in range(self.num_agents):
-            self.B_pos[:, i] = self.B_agents[i].get_pos()
-
-        rel_pos = self.R_pos - self.B_pos  # [num_envs_idx, num_agents, 3]
-        self.min_dist = torch.norm(rel_pos, dim=-1).amin(dim=-1)  # [num_envs_idx]
+        rel_pos = self.L_pos.unsqueeze(2) - self.R_pos.unsqueeze(
+            1
+        )  # [num_envs_idx, num_left_agents, num_right_agents, num_states]
+        self.rel_dist = torch.norm(rel_pos, dim=-1)  # [num_envs_idx, num_left_agents, num_right_agents]
+        self.min_dist = self.rel_dist.amin(dim=(-1, -2))  # [num_envs_idx]
 
         # check truncate and reset
         # self.terminated = self.min_dist < self.at_target_threshold
@@ -244,15 +249,15 @@ class CaptureTheFlagEnv:
         )
 
     def get_observations(self):
+        L_pos_flat = self.L_pos.reshape(self.num_envs, -1)  # [num_envs_idx, num_L_agents * 3]
         R_pos_flat = self.R_pos.reshape(self.num_envs, -1)  # [num_envs_idx, num_R_agents * 3]
-        B_pos_flat = self.B_pos.reshape(self.num_envs, -1)  # [num_envs_idx, num_B_agents * 3]
-        self.obs_buf = torch.cat([R_pos_flat, B_pos_flat], dim=1)  # [num_envs_idx, (num_R_agents + num_B_agents) * 3]
+        self.obs_buf = torch.cat([L_pos_flat, R_pos_flat], dim=1)  # [num_envs_idx, (num_L_agents + num_R_agents) * 3]
         return self.obs_buf, self.extras
 
     def reset_idx(self, envs_idx):
         """Reset environments
 
-        Initialize red team on negative x-side and blue team on positive x-side of the arena
+        Initialize left team on negative x-side and right team on positive x-side of the arena
 
         Args:
             envs_idx: indices of environments to reset
@@ -262,34 +267,34 @@ class CaptureTheFlagEnv:
 
         half_arena = self.arena_size / 2
 
-        # Red team: negative x side (-arena_size/2 to 0)
-        R_pos_x = torch.empty((len(envs_idx), self.num_agents), device=self.device).uniform_(
+        # left team: negative x side (-arena_size/2 to 0)
+        L_pos_x = torch.empty((len(envs_idx), self.num_left_agents), device=self.device).uniform_(
             -half_arena + self.size_agent, -self.size_agent
         )
-        R_pos_y = torch.empty((len(envs_idx), self.num_agents), device=self.device).uniform_(
+        L_pos_y = torch.empty((len(envs_idx), self.num_left_agents), device=self.device).uniform_(
             -half_arena + self.size_agent, half_arena - self.size_agent
         )
 
-        # Blue team: positive x side (0 to arena_size/2)
-        B_pos_x = torch.empty((len(envs_idx), self.num_agents), device=self.device).uniform_(
+        # right team: positive x side (0 to arena_size/2)
+        R_pos_x = torch.empty((len(envs_idx), self.num_right_agents), device=self.device).uniform_(
             self.size_agent, half_arena - self.size_agent
         )
-        B_pos_y = torch.empty((len(envs_idx), self.num_agents), device=self.device).uniform_(
+        R_pos_y = torch.empty((len(envs_idx), self.num_right_agents), device=self.device).uniform_(
             -half_arena + self.size_agent, half_arena - self.size_agent
         )
 
+        self.L_pos[envs_idx] = torch.stack([L_pos_x, L_pos_y, torch.zeros_like(L_pos_x)], dim=-1)
         self.R_pos[envs_idx] = torch.stack([R_pos_x, R_pos_y, torch.zeros_like(R_pos_x)], dim=-1)
-        self.B_pos[envs_idx] = torch.stack([B_pos_x, B_pos_y, torch.zeros_like(B_pos_x)], dim=-1)
 
-        # Set positions for red team agents
-        for i in range(self.num_agents):
+        # Set positions for left team agents
+        for i in range(self.num_left_agents):
+            self.L_agents[i].set_pos(self.L_pos[envs_idx, i], zero_velocity=True, envs_idx=envs_idx)
+            self.L_agents[i].zero_all_dofs_velocity(envs_idx)
+
+        # Set positions for right team agents
+        for i in range(self.num_right_agents):
             self.R_agents[i].set_pos(self.R_pos[envs_idx, i], zero_velocity=True, envs_idx=envs_idx)
             self.R_agents[i].zero_all_dofs_velocity(envs_idx)
-
-        # Set positions for blue team agents
-        for i in range(self.num_agents):
-            self.B_agents[i].set_pos(self.B_pos[envs_idx, i], zero_velocity=True, envs_idx=envs_idx)
-            self.B_agents[i].zero_all_dofs_velocity(envs_idx)
 
         self.episode_length[envs_idx] = 0
         for key in self.episode_sums.keys():
@@ -324,9 +329,10 @@ class CaptureTheFlagEnv:
         Returns:
             reward: 1 if target is tagged, -1 otherwise
         """
-        return torch.where(
-            self.min_dist <= self.tag_threshold, torch.ones_like(self.min_dist), -torch.ones_like(self.min_dist)
-        )
+        # return torch.where(
+        #     self.min_dist <= self.tag_threshold, torch.ones_like(self.rew_buf), -torch.ones_like(self.rew_buf)
+        # )
+        return (self.rel_dist <= self.tag_threshold).sum(dim=(-1, -2))
 
     # ------------ skrl required interface ----------------
     def state(self):
@@ -364,4 +370,4 @@ class CaptureTheFlagEnv:
     @property
     def action_space(self):
         # need to be gymnasium space for initiate skrl model
-        return gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_actions,))
+        return gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_left_agents * self.num_actions,))

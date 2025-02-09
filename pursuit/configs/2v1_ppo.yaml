@@ -64,7 +64,7 @@ agent:
     checkpoint_interval: 500
     store_separately: false
   eval:
-    experiment_name: "25-02-09_10-21-16-447925_PPO"
+    experiment_name: "25-02-09_10-48-42-401554_PPO"
 
 trainer:
   class: "SequentialTrainer"
@@ -77,7 +77,7 @@ env_cfg:
   dt: 0.01                      # simulation timestep
   step_dt: 0.1                  # control timestep
   agent:
-    num_left_agents: 1               # number of agents
+    num_left_agents: 2               # number of agents
     num_right_agents: 1               # number of agents
     num_observations: 9         # number of observations per agent
     num_actions: 3              # number of actions per agent
