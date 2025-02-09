@@ -3,7 +3,7 @@ train_cfg:
     class_name: PPO
     clip_param: 0.2
     desired_kl: 0.01
-    entropy_coef: 0.0
+    entropy_coef: 0.01
     gamma: 0.99
     lam: 0.95
     learning_rate: 0.0001
@@ -22,7 +22,7 @@ train_cfg:
     init_noise_std: 1.0
 
   num_steps_per_env: 10
-  num_learning_iterations: 1000
+  num_learning_iterations: 2000
   empirical_normalization: false
   # -- logging parameters
   save_interval: 100
