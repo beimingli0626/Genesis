@@ -55,7 +55,7 @@ agent:
   kl_threshold: 0
   rewards_shaper: null
   time_limit_bootstrap: true  # help reward stable when episode truncated
-  mixed_precision: true
+  mixed_precision: false
   # logging and checkpoint
   experiment:
     directory: "logs"
@@ -64,28 +64,28 @@ agent:
     checkpoint_interval: 500
     store_separately: false
   eval:
-    experiment_name: "25-02-09_10-21-16-447925_PPO"
+    experiment_name: "GOOD_ACC"
 
 trainer:
   class: "SequentialTrainer"
-  timesteps: 5000
+  timesteps: 50000
   environment_info: "log"
 
 env_cfg:
-  num_envs: 1024                # number of environments to run in parallel
-  episode_length_s: 10.0        # episode length in seconds
+  num_envs: 16384                # number of environments to run in parallel
+  episode_length_s: 50.0        # episode length in seconds
   dt: 0.01                      # simulation timestep
   step_dt: 0.1                  # control timestep
   agent:
     num_left_agents: 1               # number of agents
     num_right_agents: 1               # number of agents
-    num_observations: 9         # number of observations per agent
+    num_observations: 12         # number of observations per agent
     num_actions: 3              # number of actions per agent
     tag_threshold: 0.5          # distance threshold for tagging
-    clip_agent_actions: 2.0     # action clipping range, velocity
+    clip_agent_velocity: 2.0   # velocity clipping range
     agent_size: 0.05            # size of agent
   arena:
-    arena_size: 4.0            # edge length of arena, which would be a square
+    arena_size: 2.0            # edge length of arena, which would be a square
   reward:
     reward_scales:             # reward scaling factors
       tag: 1                 # award the pursuer for capturing the target, -1 if not captured

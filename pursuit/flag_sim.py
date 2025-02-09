@@ -13,7 +13,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--vis", action="store_true", default=False)
     parser.add_argument("-d", "--device", type=str, default="cuda:0")
-    parser.add_argument("-e", "--experiment_type", type=str, default="2v1_ppo")
+    parser.add_argument("-e", "--experiment_type", type=str, default="1v1_ppo")
     parser.add_argument("-l", "--log_dir", type=str, default="./logs")
     args = parser.parse_args()
 
@@ -44,7 +44,7 @@ def main():
     runner = Runner(cfg=cfg, env=env)
     runner._agent.load(
         os.path.join(
-            args.log_dir, args.experiment_type, cfg["agent"]["eval"]["experiment_name"], "checkpoints", "agent_2500.pt"
+            args.log_dir, args.experiment_type, cfg["agent"]["eval"]["experiment_name"], "checkpoints", "agent_50000.pt"
         )
     )
 

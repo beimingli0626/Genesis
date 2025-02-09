@@ -33,7 +33,8 @@ class CaptureTheFlagEnv:
 
         # pursuit evasion settings
         self.tag_threshold = self.cfg.get("agent", {}).get("tag_threshold", 0.5)
-        self.clip_agent_actions = self.cfg.get("agent", {}).get("clip_agent_actions", 2.0)
+        # self.clip_agent_actions = self.cfg.get("agent", {}).get("clip_agent_actions", 2.0)
+        self.clip_agent_velocity = self.cfg.get("agent", {}).get("clip_agent_velocity", 2.0)
 
         # create scene
         self.scene = gs.Scene(
@@ -142,6 +143,8 @@ class CaptureTheFlagEnv:
         # initialize buffers need to be reset in reset()
         self.L_pos = torch.zeros((self.num_envs, self.num_left_agents, 3), device=self.device, dtype=gs.tc_float)
         self.R_pos = torch.zeros((self.num_envs, self.num_right_agents, 3), device=self.device, dtype=gs.tc_float)
+        self.L_vel = torch.zeros((self.num_envs, self.num_left_agents, 3), device=self.device, dtype=gs.tc_float)
+        self.R_vel = torch.zeros((self.num_envs, self.num_right_agents, 3), device=self.device, dtype=gs.tc_float)
         self.episode_length = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
         self.extras = {}  # extra information for logging
 
@@ -180,11 +183,11 @@ class CaptureTheFlagEnv:
 
     def step(self, actions):
         # always manually clip actions when mixed precision training
-        clipped_actions = torch.clip(actions, -self.clip_agent_actions, self.clip_agent_actions)
-        self.L_actions = clipped_actions.view(self.num_envs, self.num_left_agents, self.num_actions)
+        # actions = torch.clip(actions, -self.clip_agent_velocity, self.clip_agent_velocity)
+        self.L_actions = actions.view(self.L_actions.shape)
         self.L_actions[..., 2] = 0.0  # keep Z constant for all agents
 
-        self.R_actions = torch.randn_like(self.R_actions)  # random move
+        self.R_actions.normal_(std=2)  # random move
         self.R_actions[..., 2] = 0.0  # keep Z constant for all agents
 
         # TODO: restrict acceleration
@@ -192,14 +195,18 @@ class CaptureTheFlagEnv:
             # Update positions for all agents
             for i in range(self.num_left_agents):
                 self.L_pos[:, i] = self.L_agents[i].get_pos()
-                new_L_pos = self.get_new_pos(self.L_pos[:, i], self.L_actions[:, i])
+                self.L_vel[:, i] = self.L_vel[:, i] + self.dt * self.L_actions[:, i]
+                self.L_vel[:, i] = torch.clip(self.L_vel[:, i], -self.clip_agent_velocity, self.clip_agent_velocity)
+                new_L_pos = self.get_new_pos(self.L_pos[:, i], self.L_vel[:, i])
                 self.L_agents[i].set_pos(new_L_pos, zero_velocity=True)
                 self.L_agents[i].zero_all_dofs_velocity()
 
             # calculate and apply target action
             for i in range(self.num_right_agents):
                 self.R_pos[:, i] = self.R_agents[i].get_pos()
-                new_R_pos = self.get_new_pos(self.R_pos[:, i], self.R_actions[:, i])
+                self.R_vel[:, i] = self.R_vel[:, i] + self.dt * self.R_actions[:, i]
+                self.R_vel[:, i] = torch.clip(self.R_vel[:, i], -self.clip_agent_velocity, self.clip_agent_velocity)
+                new_R_pos = self.get_new_pos(self.R_pos[:, i], self.R_vel[:, i])
                 self.R_agents[i].set_pos(new_R_pos, zero_velocity=True)
                 self.R_agents[i].zero_all_dofs_velocity()
 
@@ -250,8 +257,12 @@ class CaptureTheFlagEnv:
 
     def get_observations(self):
         L_pos_flat = self.L_pos.reshape(self.num_envs, -1)  # [num_envs_idx, num_L_agents * 3]
+        L_vel_flat = self.L_vel.reshape(self.num_envs, -1)  # [num_envs_idx, num_L_agents * 3]
         R_pos_flat = self.R_pos.reshape(self.num_envs, -1)  # [num_envs_idx, num_R_agents * 3]
-        self.obs_buf = torch.cat([L_pos_flat, R_pos_flat], dim=1)  # [num_envs_idx, (num_L_agents + num_R_agents) * 3]
+        R_vel_flat = self.R_vel.reshape(self.num_envs, -1)  # [num_envs_idx, num_R_agents * 3]
+        self.obs_buf = torch.cat(
+            [L_pos_flat, L_vel_flat, R_pos_flat, R_vel_flat], dim=1
+        )  # [num_envs_idx, (num_L_agents + num_R_agents) * 6]
         return self.obs_buf, self.extras
 
     def reset_idx(self, envs_idx):
@@ -296,6 +307,10 @@ class CaptureTheFlagEnv:
             self.R_agents[i].set_pos(self.R_pos[envs_idx, i], zero_velocity=True, envs_idx=envs_idx)
             self.R_agents[i].zero_all_dofs_velocity(envs_idx)
 
+        # reset velocities
+        self.L_vel[envs_idx] = torch.zeros_like(self.L_vel[envs_idx])
+        self.R_vel[envs_idx] = torch.zeros_like(self.R_vel[envs_idx])
+
         self.episode_length[envs_idx] = 0
         for key in self.episode_sums.keys():
             self.episode_sums[key][envs_idx] = 0.0
@@ -311,7 +326,7 @@ class CaptureTheFlagEnv:
 
         Args:
             current_pos: Current position tensor [num_envs, 3]
-            action: Action tensor [num_envs, 3]
+            action: Action tensor [num_envs, 3], which would be the velocity
 
         Returns:
             new_pos: New position tensor [num_envs, 3] clipped to arena bounds
@@ -329,10 +344,10 @@ class CaptureTheFlagEnv:
         Returns:
             reward: 1 if target is tagged, -1 otherwise
         """
-        # return torch.where(
-        #     self.min_dist <= self.tag_threshold, torch.ones_like(self.rew_buf), -torch.ones_like(self.rew_buf)
-        # )
-        return (self.rel_dist <= self.tag_threshold).sum(dim=(-1, -2))
+        return torch.where(
+            self.min_dist <= self.tag_threshold, torch.ones_like(self.rew_buf), -torch.ones_like(self.rew_buf)
+        )
+        # return (self.rel_dist <= self.tag_threshold).sum(dim=(-1, -2))
 
     # ------------ skrl required interface ----------------
     def state(self):
