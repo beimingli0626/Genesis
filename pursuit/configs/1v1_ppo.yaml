@@ -1,41 +1,36 @@
 train_cfg:
-  algorithm:
-    class_name: PPO
-    clip_param: 0.2
-    desired_kl: 0.01
-    entropy_coef: 0.01
-    gamma: 0.99
-    lam: 0.95
-    learning_rate: 0.0001
-    max_grad_norm: 1.0
-    num_learning_epochs: 5
-    num_mini_batches: 4
-    schedule: adaptive
-    use_clipped_value_loss: true
-    value_loss_coef: 1.0
-
-  policy:
-    class_name: ActorCritic
-    activation: elu
-    actor_hidden_dims: [512, 256, 128]
-    critic_hidden_dims: [512, 256, 128]
-    init_noise_std: 1.0
-
-  num_steps_per_env: 10
-  num_learning_iterations: 2000
-  empirical_normalization: false
-  # -- logging parameters
-  save_interval: 100
-  experiment_name: "capture_the_flag"
-  run_name: ""
-  # -- logging  writer
-  logger: "wandb"
-  wandb_project: "capture-the-flag"
-  # -- load and resuming
-  resume: false
-  load_run: -1
-  resume_path: null
-  checkpoint: -1
+  num_episodes: 100            # number of episodes to train for
+  rollouts: 10                 # number of rollouts before updating
+  learning_epochs: 5           # number of learning epochs during each update
+  mini_batches: 4             # number of mini batches during each learning epoch
+  discount_factor: 0.99       # discount factor (gamma)
+  lambda: 0.95                # TD(lambda) coefficient for computing returns and advantages
+  learning_rate: 0.0003       # learning rate
+  learning_rate_scheduler: "KLAdaptiveRL"        # learning rate scheduler class
+  learning_rate_scheduler_kwargs:                 # learning rate scheduler kwargs
+    kl_threshold: 0.01                           # KL divergence threshold
+    min_lr: 0.000001                            # minimum learning rate
+  state_preprocessor: null                       # state preprocessor class
+  state_preprocessor_kwargs: {}                  # state preprocessor kwargs
+  value_preprocessor: null                       # value preprocessor class
+  value_preprocessor_kwargs: {}                  # value preprocessor kwargs
+  random_timesteps: 0         # random exploration steps
+  learning_starts: 0          # learning starts after this many steps
+  grad_norm_clip: 1.0        # clipping coefficient for the norm of the gradients
+  ratio_clip: 0.2            # clipping coefficient for computing the clipped surrogate objective
+  value_clip: 0.2            # clipping coefficient for computing the value loss
+  clip_predicted_values: true # clip predicted values during value loss computation
+  entropy_loss_scale: 0.01   # entropy loss scaling factor
+  value_loss_scale: 1.0      # value loss scaling factor
+  kl_threshold: 0.0          # KL divergence threshold for early stopping
+  rewards_shaper: null       # rewards shaping function
+  time_limit_bootstrap: true # bootstrap at timeout termination
+  mixed_precision: true      # enable automatic mixed precision
+  experiment:
+    write_interval: 10           # TensorBoard writing interval (timesteps)
+    checkpoint_interval: "auto"  # interval for checkpoints (timesteps)
+    store_separately: false      # whether to store checkpoints separately
+    wandb: true                  # whether to use Weights & Biases
 
 env_cfg:
   num_envs: 1024                # number of environments to run in parallel

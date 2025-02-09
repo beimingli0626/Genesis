@@ -16,12 +16,11 @@ class CaptureTheFlagEnv:
         # environment settings
         self.num_envs = self.cfg.get("num_envs", 1024)
         self.num_agents = self.cfg.get("agent", {}).get("num_agents", 1)  # number of agents per team
-        self.num_observations = (
-            self.cfg.get("agent", {}).get("num_observations", 3) * self.num_agents
-        )  # 3 for each agent
+        self.num_obs = self.cfg.get("agent", {}).get("num_observations", 3) * self.num_agents  # 3 for each agent
         self.num_actions = (
             self.cfg.get("agent", {}).get("num_actions", 3) * self.num_agents
         )  # 3 for each agent, pursuer team
+        self.num_privileged_obs = None
 
         # simulation settings
         self.dt = self.cfg.get("dt", 0.01)  # run in 100hz, default
@@ -121,7 +120,7 @@ class CaptureTheFlagEnv:
             self.episode_sums[name] = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
 
         # initialize buffers, note that all below buffers should be rewrite as dict for multi-agent env, with key as agent id
-        self.obs_buf = torch.zeros((self.num_envs, self.num_observations), device=self.device, dtype=gs.tc_float)
+        self.obs_buf = torch.zeros((self.num_envs, self.num_obs), device=self.device, dtype=gs.tc_float)
         self.rew_buf = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
         self.terminated = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
         self.truncated = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
@@ -139,7 +138,7 @@ class CaptureTheFlagEnv:
         self.B_pos = torch.zeros((self.num_envs, self.num_agents, 3), device=self.device, dtype=gs.tc_float)
         self.min_dist = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
         self.episode_length = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
-        self.extras = {}  # extra information for logging
+        self.extras = {"observations": {}}  # extra information for logging
 
     def generate_arena(self):
         """Generate square arena with walls"""
@@ -210,12 +209,16 @@ class CaptureTheFlagEnv:
         for i in range(self.num_agents):
             self.B_pos[:, i] = self.B_agents[i].get_pos()
 
-        rel_pos = self.R_pos - self.B_pos  # [num_envs_idx, 1, 3]
-        self.min_dist = torch.norm(rel_pos, dim=-1).squeeze(-1)  # [num_envs_idx]
+        if self.num_agents == 1:
+            rel_pos = self.R_pos - self.B_pos  # [num_envs_idx, 1, 3]
+            self.min_dist = torch.norm(rel_pos, dim=-1).squeeze(-1)  # [num_envs_idx]
 
         # check truncate and reset
         # self.terminated = self.min_dist < self.at_target_threshold
         self.truncated = self.episode_length > self.max_episode_length
+        time_out_idx = (self.episode_length > self.max_episode_length).nonzero(as_tuple=False).flatten()
+        self.extras["time_outs"] = torch.zeros_like(self.reset_buf, device=self.device, dtype=gs.tc_float)
+        self.extras["time_outs"][time_out_idx] = 1.0
 
         # compute reward
         self.rew_buf[:] = 0.0
@@ -228,16 +231,9 @@ class CaptureTheFlagEnv:
         self.reset_buf = self.truncated | self.terminated
         self.reset_idx(self.reset_buf.nonzero(as_tuple=False).flatten())
 
-        # always call get_observations() after reset
         self.get_observations()
 
-        return (
-            self.obs_buf,
-            self.rew_buf.unsqueeze(-1),
-            self.terminated.unsqueeze(-1),
-            self.truncated.unsqueeze(-1),
-            self.extras,
-        )
+        return self.obs_buf, self.rew_buf, self.reset_buf, self.extras
 
     def get_observations(self):
         R_pos_flat = self.R_pos.reshape(self.num_envs, -1)  # [num_envs_idx, num_R_agents * 3]
@@ -289,14 +285,18 @@ class CaptureTheFlagEnv:
             self.B_agents[i].set_pos(self.B_pos[envs_idx, i], zero_velocity=True, envs_idx=envs_idx)
             self.B_agents[i].zero_all_dofs_velocity(envs_idx)
 
+        # if self.num_agents == 1:
+        #     rel_pos = self.R_pos[envs_idx] - self.B_pos[envs_idx]  # [num_envs_idx, 1, 3]
+        #     self.min_dist[envs_idx] = torch.norm(rel_pos, dim=-1).squeeze(-1)  # [num_envs_idx]
+
         self.episode_length[envs_idx] = 0
+        self.reset_buf[envs_idx] = True
         for key in self.episode_sums.keys():
             self.episode_sums[key][envs_idx] = 0.0
 
     def reset(self):
-        """Reset environments, will only be called once at the beginning of the initialization"""
+        self.reset_buf[:] = True
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
-        self.get_observations()  # always update observation buffer after reset
         return self.obs_buf, self.extras
 
     def get_new_pos(self, current_pos, action):
@@ -326,37 +326,6 @@ class CaptureTheFlagEnv:
             self.min_dist <= self.tag_threshold, torch.ones_like(self.min_dist), -torch.ones_like(self.min_dist)
         )
 
-    # ------------ skrl required interface ----------------
-    def state(self):
-        pass
-
-    def render(self):
-        pass
-
-    def close(self):
-        pass
-
-    # # TODO: define observations spaces, action spaces, shared observation spaces
-    # # ------------ multi-agent env required properties ------------
-    # @property
-    # def observation_spaces(self):
-    #     return self.num_observations
-
-    # @property
-    # def action_spaces(self):
-    #     return self.num_actions
-
-    # ------------ single-agent env required properties ------------
-    # @property
-    # def state_space(self):
-    #     # TODO: change to actual state space
-    #     # for multiagent env, this is the global state space
-    #     return self.agent_pos.shape[-1]
-
-    @property
-    def observation_space(self):
-        return self.num_observations
-
-    @property
-    def action_space(self):
-        return self.num_actions
+    # ------------ rsl_rl required interface ----------------
+    def get_privileged_observations(self):
+        return None
